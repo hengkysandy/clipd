@@ -58,6 +58,7 @@ final class CardItem: NSCollectionViewItem {
     private var timeLabel: NSTextField!
     private var iconView: NSImageView!
     private var bodyLabel: NSTextField!
+    private var previewImageView: NSImageView!
     private var countLabel: NSTextField!
     private var indexLabel: NSTextField!
     private var card: NSView!
@@ -124,6 +125,16 @@ final class CardItem: NSCollectionViewItem {
         bodyLabel.isSelectable = false
         card.addSubview(bodyLabel)
 
+        // Image preview, shown in place of the body text for image items.
+        previewImageView = NSImageView(frame: bodyLabel.frame)
+        previewImageView.imageScaling = .scaleProportionallyUpOrDown
+        previewImageView.imageAlignment = .alignTop
+        previewImageView.wantsLayer = true
+        previewImageView.layer?.cornerRadius = 4
+        previewImageView.layer?.masksToBounds = true
+        previewImageView.isHidden = true
+        card.addSubview(previewImageView)
+
         // Footer: character count and position.
         countLabel = NSTextField(labelWithString: "")
         countLabel.frame = NSRect(x: 12, y: 10, width: 150, height: 16)
@@ -156,11 +167,28 @@ final class CardItem: NSCollectionViewItem {
     func configure(with item: HistoryItem, index: Int) {
         self.index = index
         itemKind = item.kind
-        kindLabel.stringValue = item.kind == .link ? "Link" : "Text"
+        switch item.kind {
+        case .link:  kindLabel.stringValue = "Link"
+        case .image: kindLabel.stringValue = "Image"
+        case .text:  kindLabel.stringValue = "Text"
+        }
         timeLabel.stringValue = CardItem.age(of: item.createdAt)
         iconView.image = AppIconCache.icon(forBundleID: item.sourceBundleID)
-        bodyLabel.stringValue = item.preview
-        countLabel.stringValue = "\(item.text.count) characters"
+        if item.kind == .image, let data = item.imageData {
+            // Decoding a 2.8 MB PNG per visible card is fine: only a handful
+            // are on screen and the collection view recycles them.
+            previewImageView.image = NSImage(data: data)
+            previewImageView.isHidden = false
+            bodyLabel.isHidden = true
+            // Dimensions rather than a character count, matching the reference.
+            countLabel.stringValue = "\(item.pixelWidth ?? 0) x \(item.pixelHeight ?? 0)"
+        } else {
+            previewImageView.image = nil
+            previewImageView.isHidden = true
+            bodyLabel.isHidden = false
+            bodyLabel.stringValue = item.preview
+            countLabel.stringValue = "\(item.text.count) characters"
+        }
         indexLabel.stringValue = "\(index + 1)"
         applySelection()
     }

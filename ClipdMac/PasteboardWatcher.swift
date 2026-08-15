@@ -66,18 +66,52 @@ final class PasteboardWatcher {
             // password into a log file.
             onRefusal(reason)
         case .store:
+            // Images first. A screenshot copy carries public.png and no usable
+            // string, and a Finder copy carries a file URL whose string is a
+            // path. Checking text first would turn both into text cards.
+            if let item = imageItem(from: items, front: front) {
+                onCapture(item)
+                return
+            }
             guard let text = pasteboard.string(forType: .string), !text.isEmpty else {
-                // Images are captured in the storage plan. The skeleton proves
-                // the text path end to end first.
                 onRefusal(.noUsableContent)
                 return
             }
-            let item = HistoryItem(
+            onCapture(HistoryItem(
                 text: text,
                 sourceBundleID: front?.bundleIdentifier,
                 sourceName: front?.localizedName,
-                createdAt: Date())
-            onCapture(item)
+                createdAt: Date()))
         }
+    }
+
+    /// Builds an image item if the pasteboard carries picture bytes.
+    ///
+    /// Prefers PNG, which is what macOS actually hands over for a screenshot
+    /// and is already compressed. TIFF is the fallback and is much larger, so
+    /// it gets re-encoded to PNG rather than stored raw.
+    private func imageItem(from items: [NSPasteboardItem],
+                           front: NSRunningApplication?) -> HistoryItem? {
+        let pngType = NSPasteboard.PasteboardType("public.png")
+        for item in items {
+            var data: Data?
+            if item.types.contains(pngType) {
+                data = item.data(forType: pngType)
+            } else if item.types.contains(.tiff), let tiff = item.data(forType: .tiff) {
+                data = NSBitmapImageRep(data: tiff)?
+                    .representation(using: .png, properties: [:])
+            }
+            guard let data, let image = NSImage(data: data) else { continue }
+            let rep = image.representations.first
+            let width = rep?.pixelsWide ?? Int(image.size.width)
+            let height = rep?.pixelsHigh ?? Int(image.size.height)
+            guard width > 0, height > 0 else { continue }
+            return HistoryItem(
+                imageData: data, pixelWidth: width, pixelHeight: height,
+                sourceBundleID: front?.bundleIdentifier,
+                sourceName: front?.localizedName,
+                createdAt: Date())
+        }
+        return nil
     }
 }

@@ -23,8 +23,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // argument as <private> by default, which makes the diagnostic
                 // unreadable and indistinguishable from "nothing happened".
                 // Safe here because no clipboard value is ever passed in.
+                // Size in the item's own units. "captured 0 chars" for an
+                // image reads as a failure when it is a success.
+                let size = item.kind == .image
+                    ? "\(item.imageData?.count ?? 0) bytes"
+                    : "\(item.text.count) chars"
                 Diag.capture.info("""
-                    captured \(item.text.count, privacy: .public) chars from \
+                    captured \(item.kind.rawValue, privacy: .public) \
+                    \(size, privacy: .public) from \
                     \(item.sourceBundleID ?? "unknown", privacy: .public), \
                     \(self.history.items.count, privacy: .public) in history
                     """)
@@ -52,8 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         panelController = PanelController(history: history)
         panelController.onCommit = { item, target in
-            let ok = Paster.paste(item.text, into: target)
-            Diag.paste.info("pasted \(item.text.count, privacy: .public) chars into \(target?.bundleIdentifier ?? "nil", privacy: .public), success \(ok, privacy: .public)")
+            let ok = Paster.paste(item, into: target)
+            Diag.paste.info("pasted \(item.kind.rawValue, privacy: .public), \(item.imageData?.count ?? item.text.count, privacy: .public) bytes or chars, into \(target?.bundleIdentifier ?? "nil", privacy: .public), success \(ok, privacy: .public)")
         }
         hotKey = HotKey { [weak self] in
             self?.panelController.toggle()

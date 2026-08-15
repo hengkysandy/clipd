@@ -109,3 +109,47 @@ func removeMissingID() {
     let empty = History()
     #expect(empty.remove(id: UUID()) == false)
 }
+
+private func imageItem(_ bytes: [UInt8], w: Int = 2560, h: Int = 1664,
+                       at seconds: TimeInterval = 0) -> HistoryItem {
+    HistoryItem(imageData: Data(bytes), pixelWidth: w, pixelHeight: h,
+                sourceBundleID: "com.apple.screencaptureui", sourceName: "Screenshot",
+                createdAt: Date(timeIntervalSince1970: seconds))
+}
+
+@Test("An image item is kind image and previews its dimensions")
+func imageKindAndPreview() {
+    let it = imageItem([0x89, 0x50, 0x4E, 0x47])
+    #expect(it.kind == .image)
+    #expect(it.preview == "Image 2560 x 1664")
+    #expect(it.text.isEmpty)
+    #expect(it.imageData?.count == 4)
+}
+
+@Test("Identical images dedup, different images do not")
+func imageDedup() {
+    let history = History()
+    #expect(history.add(imageItem([1, 2, 3], at: 100)) == true)
+    // Same bytes, different dimensions recorded: still the same picture.
+    #expect(history.add(imageItem([1, 2, 3], at: 200)) == false)
+    #expect(history.add(imageItem([9, 9, 9], at: 300)) == true)
+    #expect(history.items.count == 2)
+}
+
+@Test("Image content hash is stable across instances, not process seeded")
+func imageHashIsStable() {
+    // Rejected: Data.hashValue, which is seeded per process. This has to hold
+    // once these are written to disk and read back.
+    #expect(imageItem([1, 2, 3]).contentHash == imageItem([1, 2, 3]).contentHash)
+    #expect(imageItem([1, 2, 3]).contentHash != imageItem([3, 2, 1]).contentHash)
+}
+
+@Test("Images are findable by search even though they have no text")
+func imagesAreSearchable() {
+    let history = History()
+    _ = history.add(imageItem([1, 2, 3], at: 100))
+    _ = history.add(item("some ordinary text", at: 200))
+    #expect(history.search("image").count == 1)
+    #expect(history.search("2560").count == 1)
+    #expect(history.search("ordinary").count == 1)
+}

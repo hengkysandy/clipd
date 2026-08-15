@@ -59,7 +59,10 @@ public final class History {
             .map(String.init)
         guard !tokens.isEmpty else { return storage }
         return storage.filter { item in
-            let haystack = item.text.lowercased()
+            // Preview as well as text, so images are reachable. An image has no
+            // text at all, and its preview is "Image 2560 x 1664", which makes
+            // typing "image" or a dimension find it.
+            let haystack = (item.text + " " + item.preview).lowercased()
             return tokens.allSatisfy { haystack.contains($0) }
         }
     }

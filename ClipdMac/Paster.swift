@@ -1,4 +1,5 @@
 import AppKit
+import ClipdCore
 
 enum Paster {
     /// Restores focus to `app`, then posts Cmd+V.
@@ -8,10 +9,20 @@ enum Paster {
     /// while doing nothing.
     @MainActor
     @discardableResult
-    static func paste(_ text: String, into app: NSRunningApplication?) -> Bool {
+    static func paste(_ item: HistoryItem, into app: NSRunningApplication?) -> Bool {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        if item.kind == .image, let data = item.imageData {
+            // Write PNG and a TIFF fallback. Some apps only accept TIFF from
+            // the pasteboard, and an image that pastes into Preview but not
+            // into Mail would look like a broken feature.
+            pasteboard.setData(data, forType: NSPasteboard.PasteboardType("public.png"))
+            if let tiff = NSImage(data: data)?.tiffRepresentation {
+                pasteboard.setData(tiff, forType: .tiff)
+            }
+        } else {
+            pasteboard.setString(item.text, forType: .string)
+        }
 
         if let app {
             app.activate()
