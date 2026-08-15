@@ -36,10 +36,17 @@ final class PasteboardWatcher {
         timer = nil
     }
 
+    /// Set by the app while capture is suspended.
+    var isPaused: () -> Bool = { false }
+
     private func poll() {
         let current = pasteboard.changeCount
         guard current != lastChangeCount else { return }
+        // Consume the change even while paused. Without this, resuming would
+        // immediately capture whatever was copied during the pause, which
+        // defeats the entire point of pausing before handling something private.
         lastChangeCount = current
+        guard !isPaused() else { return }
 
         // Read the frontmost app before touching the pasteboard, so the value
         // is as close as possible to the moment of the change.

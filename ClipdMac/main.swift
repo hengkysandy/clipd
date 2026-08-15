@@ -8,6 +8,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKey: HotKey?
     private var panelController: PanelController!
     let history = History()
+    private var pause = PauseState.running
+    private var pauseTicker: Timer?
+    private var lastPausedFlag = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -17,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onCapture: { [weak self] item in
                 guard let self else { return }
                 self.history.add(item)
+                Sounds.captured()
                 // Types and counts only, never the value.
                 //
                 // %{public} is required. Unified logging redacts every string
@@ -54,11 +58,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.rebuildMenu()
                 }
             })
+        watcher.isPaused = { [weak self] in
+            self?.pause.isPaused(now: Date()) ?? false
+        }
         watcher.start()
+
+        // A timed pause expires by itself, and nothing else would redraw the
+        // icon, so a resumed app would keep showing the pause glyph until the
+        // next copy. Redraws only on an actual change, so it costs nothing.
+        pauseTicker = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let paused = self.pause.isPaused(now: Date())
+                guard paused != self.lastPausedFlag else { return }
+                self.lastPausedFlag = paused
+                if !paused { Diag.capture.info("pause expired, resuming") }
+                self.rebuildMenu()
+            }
+        }
 
         panelController = PanelController(history: history)
         panelController.onCommit = { item, target in
             let ok = Paster.paste(item, into: target)
+            if ok { Sounds.pasted() }
             Diag.paste.info("pasted \(item.kind.rawValue, privacy: .public), \(item.imageData?.count ?? item.text.count, privacy: .public) bytes or chars, into \(target?.bundleIdentifier ?? "nil", privacy: .public), success \(ok, privacy: .public)")
         }
         hotKey = HotKey { [weak self] in
@@ -78,7 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // nothing, so the app would otherwise look completely healthy while
         // pasting nothing at all.
         let trusted = AXIsProcessTrusted()
-        setStatusIcon(trusted: trusted)
+        setStatusIcon(trusted: trusted, paused: pause.isPaused(now: Date()))
         let header = NSMenuItem(
             title: trusted
                 ? "Clipd \(ClipdCore.version), \(history.items.count) items"
@@ -92,10 +114,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                     action: nil, keyEquivalent: ""))
         }
         menu.addItem(.separator())
+
+        // Pause. This is a privacy control, not a convenience: you pause it
+        // before handling something you do not want recorded at all.
+        if let label = pause.remainingLabel(now: Date()) {
+            let status = NSMenuItem(title: label, action: nil, keyEquivalent: "")
+            status.isEnabled = false
+            menu.addItem(status)
+            let resume = NSMenuItem(title: "Resume Clipd",
+                                    action: #selector(resumeCapture), keyEquivalent: "")
+            resume.target = self
+            menu.addItem(resume)
+        } else {
+            let pauseItem = NSMenuItem(title: "Pause Clipd", action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            for duration in PauseDuration.allCases {
+                let entry = NSMenuItem(title: duration.label,
+                                       action: #selector(pauseCapture(_:)), keyEquivalent: "")
+                entry.target = self
+                entry.representedObject = duration.rawValue
+                submenu.addItem(entry)
+            }
+            pauseItem.submenu = submenu
+            menu.addItem(pauseItem)
+        }
+
+        let sound = NSMenuItem(title: "Sound effects",
+                               action: #selector(toggleSound), keyEquivalent: "")
+        sound.target = self
+        sound.state = Sounds.enabled ? .on : .off
+        menu.addItem(sound)
+
+        menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Clipd", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
         statusItem.menu = menu
+    }
+
+    @objc private func pauseCapture(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let duration = PauseDuration(rawValue: raw) else { return }
+        pause = PauseState.paused(duration, from: Date())
+        lastPausedFlag = true
+        Diag.capture.info("paused: \(duration.rawValue, privacy: .public)")
+        rebuildMenu()
+    }
+
+    @objc private func resumeCapture() {
+        pause = .running
+        lastPausedFlag = false
+        Diag.capture.info("resumed")
+        rebuildMenu()
+    }
+
+    @objc private func toggleSound() {
+        Sounds.enabled.toggle()
+        rebuildMenu()
     }
 
     /// A clipboard glyph, not the word "Clipd". A text title eats menu bar
@@ -105,20 +180,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// in orange and NOT as a template, so it stays orange in both light and
     /// dark menu bars. Without Accessibility macOS discards every synthesised
     /// event and reports nothing, so the app must contradict itself visibly.
-    private func setStatusIcon(trusted: Bool) {
+    private func setStatusIcon(trusted: Bool, paused: Bool) {
         guard let button = statusItem.button else { return }
         button.title = ""
-        let name = trusted ? "doc.on.clipboard" : "exclamationmark.triangle.fill"
-        let description = trusted ? "Clipd" : "Clipd, paste disabled"
+        // A paused app must not look identical to a working one, or you find
+        // out it recorded nothing an hour later.
+        let name: String
+        let description: String
+        if !trusted {
+            name = "exclamationmark.triangle.fill"
+            description = "Clipd, paste disabled"
+        } else if paused {
+            name = "pause.circle"
+            description = "Clipd, paused"
+        } else {
+            name = "doc.on.clipboard"
+            description = "Clipd"
+        }
         let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
         let image = NSImage(systemSymbolName: name, accessibilityDescription: description)?
             .withSymbolConfiguration(config)
         image?.isTemplate = trusted
         button.image = image
         button.contentTintColor = trusted ? nil : .systemOrange
-        button.toolTip = trusted
-            ? "Clipd"
-            : "Clipd cannot paste: Accessibility is not granted"
+        button.toolTip = description
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
