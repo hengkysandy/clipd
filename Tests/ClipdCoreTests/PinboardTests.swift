@@ -1,0 +1,71 @@
+import Testing
+import Foundation
+@testable import ClipdCore
+
+private func item(_ text: String, at seconds: TimeInterval = 0) -> HistoryItem {
+    HistoryItem(text: text, sourceBundleID: nil, sourceName: nil,
+                createdAt: Date(timeIntervalSince1970: seconds))
+}
+
+@Test("A nil board means the whole history, unfiltered")
+func nilBoardShowsEverything() {
+    let items = [item("a", at: 200), item("b", at: 100)]
+    #expect(itemsOn(nil, items: items, membership: [:]).map(\.text) == ["a", "b"])
+}
+
+@Test("A board shows only its own items, in history order")
+func boardFilters() {
+    let a = item("a", at: 300), b = item("b", at: 200), c = item("c", at: 100)
+    let board = Pinboard(id: UUID(), name: "Work", colorName: "blue", sortOrder: 0)
+    let membership: [UUID: Set<UUID>] = [board.id: [a.id, c.id]]
+    #expect(itemsOn(board, items: [a, b, c], membership: membership).map(\.text) == ["a", "c"])
+}
+
+@Test("An empty board shows nothing rather than everything")
+func emptyBoardShowsNothing() {
+    let board = Pinboard(id: UUID(), name: "Empty", colorName: "red", sortOrder: 0)
+    // Falling back to the full history here would be worse than useless: you
+    // would think the board had items it does not.
+    #expect(itemsOn(board, items: [item("a")], membership: [:]).isEmpty)
+}
+
+@Test("An item can be on more than one board")
+func itemOnManyBoards() {
+    let shared = item("shared")
+    let one = Pinboard(id: UUID(), name: "One", colorName: "red", sortOrder: 0)
+    let two = Pinboard(id: UUID(), name: "Two", colorName: "blue", sortOrder: 1)
+    let membership: [UUID: Set<UUID>] = [one.id: [shared.id], two.id: [shared.id]]
+    #expect(itemsOn(one, items: [shared], membership: membership).count == 1)
+    #expect(itemsOn(two, items: [shared], membership: membership).count == 1)
+}
+
+@Test("Membership naming a missing item does not crash or invent one")
+func staleMembershipIsIgnored() {
+    // Degenerate case: an item was deleted but its membership row lingers.
+    let board = Pinboard(id: UUID(), name: "Board", colorName: "red", sortOrder: 0)
+    let membership: [UUID: Set<UUID>] = [board.id: [UUID(), UUID()]]
+    #expect(itemsOn(board, items: [item("a")], membership: membership).isEmpty)
+}
+
+@Test("Colours cycle and avoid what is already used")
+func colourAssignment() {
+    #expect(nextColor(after: []) == BoardColor.allCases[0].rawValue)
+    #expect(nextColor(after: [BoardColor.allCases[0].rawValue]) == BoardColor.allCases[1].rawValue)
+    // Once every colour is used it wraps rather than returning nothing.
+    let all = BoardColor.allCases.map(\.rawValue)
+    #expect(BoardColor(rawValue: nextColor(after: all)) != nil)
+}
+
+@Test("Every board colour has a name that survives a round trip")
+func coloursAreCodable() {
+    for colour in BoardColor.allCases {
+        #expect(BoardColor(rawValue: colour.rawValue) == colour)
+    }
+}
+
+@Test("Boards sort by sortOrder, not by name or id")
+func boardOrdering() {
+    let a = Pinboard(id: UUID(), name: "Zebra", colorName: "red", sortOrder: 0)
+    let b = Pinboard(id: UUID(), name: "Apple", colorName: "blue", sortOrder: 1)
+    #expect([b, a].sorted { $0.sortOrder < $1.sortOrder }.map(\.name) == ["Zebra", "Apple"])
+}

@@ -6,6 +6,22 @@ import ClipdCore
 private final class ClipdPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// Cmd+1 to Cmd+9 files the selected card on that board.
+    ///
+    /// Rejected: drag and drop, slower than a keystroke for the case this app
+    /// is for. Rejected: a context menu, which needs the mouse.
+    var onNumberKey: ((Int) -> Bool)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.contains(.command),
+           let characters = event.charactersIgnoringModifiers,
+           let digit = Int(characters), digit >= 1, digit <= 9,
+           onNumberKey?(digit) == true {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
 }
 
 /// Refuses first responder so a click on a card never takes focus away from
@@ -40,6 +56,23 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     private var results: [HistoryItem] = []
     private var selection: Int = 0
     private var isDismissing = false
+    /// True while one of our own dialogs is up.
+    ///
+    /// A modal alert takes key focus, which fires the resign-key handler and
+    /// dismissed the panel underneath it. The New Pinboard dialog then typed
+    /// into whatever app was behind. Click-away must still close the panel, so
+    /// the flag is narrower than disabling the handler.
+    private var isPresentingModal = false
+    private var tabs: BoardTabsView!
+    private var boards: [Pinboard] = []
+    private var membership: [UUID: Set<UUID>] = [:]
+    private var selectedBoard: UUID?
+
+    /// Supplied by the app, so the panel never talks to the database directly.
+    var boardProvider: () -> ([Pinboard], [UUID: Set<UUID>]) = { ([], [:]) }
+    var onCreateBoard: ((String) -> Void)?
+    var onDeleteBoard: ((UUID) -> Void)?
+    var onToggleMembership: ((UUID, UUID) -> Void)?
 
     /// The app that was frontmost when the panel opened. Everything depends on
     /// putting it back before pasting.
@@ -91,6 +124,17 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         // Click anywhere outside and the panel goes away. Losing key status is
         // the signal: it covers clicking another app, clicking the desktop and
         // switching apps with Cmd+Tab, which a click monitor would not.
+        panel.onNumberKey = { [weak self] digit in
+            guard let self, digit <= self.boards.count,
+                  self.selection >= 0, self.selection < self.results.count else { return false }
+            let board = self.boards[digit - 1]
+            let item = self.results[self.selection]
+            self.onToggleMembership?(item.id, board.id)
+            (self.boards, self.membership) = self.boardProvider()
+            self.reload()
+            return true
+        }
+
         NotificationCenter.default.addObserver(
             self, selector: #selector(panelResignedKey),
             name: NSWindow.didResignKeyNotification, object: panel)
@@ -100,7 +144,7 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         // The guard matters. Committing a paste orders the panel out and
         // activates the previous app, which itself resigns key. Without this
         // the dismiss animation would run a second time on top of itself.
-        guard panel.isVisible, !isDismissing else { return }
+        guard panel.isVisible, !isDismissing, !isPresentingModal else { return }
         dismiss()
     }
 
@@ -122,6 +166,17 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         field.drawsBackground = false
         field.textColor = .white
         content.addSubview(field)
+
+        tabs = BoardTabsView(frame: NSRect(x: 490, y: barY + 11,
+                                           width: max(width - 520, 200), height: 30))
+        tabs.onSelect = { [weak self] id in
+            self?.selectedBoard = id
+            self?.refreshTabs()
+            self?.reload()
+        }
+        tabs.onCreate = { [weak self] in self?.promptForNewBoard() }
+        tabs.onDelete = { [weak self] id in self?.confirmDeleteBoard(id) }
+        content.addSubview(tabs)
 
         // The loud failure. Without Accessibility, macOS discards every
         // synthesised event and reports nothing, so the app would otherwise
@@ -199,6 +254,13 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     private func show() {
         previousApp = NSWorkspace.shared.frontmostApplication
         field.stringValue = ""
+        (boards, membership) = boardProvider()
+        if let current = selectedBoard, !boards.contains(where: { $0.id == current }) {
+            // Deleted on the other Mac. Fall back to everything rather than
+            // showing an empty panel with no explanation.
+            selectedBoard = nil
+        }
+        refreshTabs()
         reload()
         updateTrustBanner()
 
@@ -261,8 +323,14 @@ final class PanelController: NSObject, NSTextFieldDelegate,
 
     // MARK: - Data
 
+    private func refreshTabs() {
+        tabs.update(boards: boards, selected: selectedBoard)
+    }
+
     private func reload() {
-        results = history.search(field.stringValue)
+        let all = history.search(field.stringValue)
+        let board = boards.first { $0.id == selectedBoard }
+        results = itemsOn(board, items: all, membership: membership)
         collection.reloadData()
         selection = 0
         applySelection(scroll: false)
@@ -361,6 +429,54 @@ final class PanelController: NSObject, NSTextFieldDelegate,
             return
         }
         commitDelete(of: doomed)
+    }
+
+    private func promptForNewBoard() {
+        let alert = NSAlert()
+        alert.messageText = "New pinboard"
+        alert.informativeText = "Give it a name."
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        input.placeholderString = "Work"
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = input
+        isPresentingModal = true
+        let response = alert.runModal()
+        isPresentingModal = false
+        // Put focus back on the panel, or the next keystroke goes to whatever
+        // was behind it.
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(field)
+        guard response == .alertFirstButtonReturn else { return }
+        let name = input.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        onCreateBoard?(name)
+        (boards, membership) = boardProvider()
+        refreshTabs()
+        reload()
+    }
+
+    private func confirmDeleteBoard(_ id: UUID) {
+        let name = boards.first { $0.id == id }?.name ?? "this pinboard"
+        let alert = NSAlert()
+        alert.messageText = "Delete \"\(name)\"?"
+        // Say plainly that the items survive. Otherwise this reads as
+        // "delete these clippings", which it is not.
+        alert.informativeText = "The pinboard is removed. The items on it stay in your history."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        isPresentingModal = true
+        let response = alert.runModal()
+        isPresentingModal = false
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(field)
+        guard response == .alertFirstButtonReturn else { return }
+        onDeleteBoard?(id)
+        if selectedBoard == id { selectedBoard = nil }
+        (boards, membership) = boardProvider()
+        refreshTabs()
+        reload()
     }
 
     private func commitDelete(of doomed: HistoryItem) {

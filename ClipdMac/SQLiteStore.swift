@@ -245,4 +245,91 @@ final class SQLiteStore {
     func applyTombstone(id: UUID, at date: Date) throws {
         try softDelete(id: id, at: date)
     }
+
+    // MARK: - Pinboards
+
+    func allPinboards() throws -> [Pinboard] {
+        try db.query("""
+            SELECT id, name, color, sort_order FROM pinboards
+            WHERE deleted_at IS NULL ORDER BY sort_order ASC
+            """, []).compactMap { row in
+                guard case .text(let idString)? = row["id"], let id = UUID(uuidString: idString),
+                      case .text(let name)? = row["name"],
+                      case .text(let color)? = row["color"],
+                      case .int(let order)? = row["sort_order"] else { return nil }
+                return Pinboard(id: id, name: name, colorName: color, sortOrder: Int(order))
+            }
+    }
+
+    @discardableResult
+    func createPinboard(name: String) throws -> Pinboard {
+        let existing = try allPinboards()
+        let board = Pinboard(name: name,
+                             colorName: nextColor(after: existing.map(\.colorName)),
+                             sortOrder: (existing.map(\.sortOrder).max() ?? -1) + 1)
+        let millis = Int64(Date().timeIntervalSince1970 * 1000)
+        try db.run("""
+            INSERT INTO pinboards (id, name, color, sort_order, updated_at, deleted_at, device_id)
+            VALUES (?,?,?,?,?,NULL,?)
+            """, [.text(board.id.uuidString), .text(board.name), .text(board.colorName),
+                  .int(Int64(board.sortOrder)), .int(millis), .text(deviceID)])
+        return board
+    }
+
+    /// A tombstone, not a row removal, so a sync cannot resurrect the board.
+    ///
+    /// The memberships are tombstoned too, but the ITEMS are untouched. A board
+    /// is a label, not a container, and losing history because you tidied up a
+    /// board would be unforgivable.
+    func deletePinboard(id: UUID) throws {
+        let millis = Int64(Date().timeIntervalSince1970 * 1000)
+        try db.run("UPDATE pinboards SET deleted_at = ?, updated_at = ? WHERE id = ?",
+                   [.int(millis), .int(millis), .text(id.uuidString)])
+        try db.run("""
+            UPDATE item_pinboards SET deleted_at = ?, updated_at = ? WHERE pinboard_id = ?
+            """, [.int(millis), .int(millis), .text(id.uuidString)])
+    }
+
+    func renamePinboard(id: UUID, to name: String) throws {
+        let millis = Int64(Date().timeIntervalSince1970 * 1000)
+        try db.run("UPDATE pinboards SET name = ?, updated_at = ? WHERE id = ?",
+                   [.text(name), .int(millis), .text(id.uuidString)])
+    }
+
+    func membership() throws -> [UUID: Set<UUID>] {
+        var out: [UUID: Set<UUID>] = [:]
+        for row in try db.query("""
+            SELECT item_id, pinboard_id FROM item_pinboards WHERE deleted_at IS NULL
+            """, []) {
+            guard case .text(let itemString)? = row["item_id"],
+                  case .text(let boardString)? = row["pinboard_id"],
+                  let item = UUID(uuidString: itemString),
+                  let board = UUID(uuidString: boardString) else { continue }
+            out[board, default: []].insert(item)
+        }
+        return out
+    }
+
+    func setMembership(item: UUID, board: UUID, on: Bool) throws {
+        let millis = Int64(Date().timeIntervalSince1970 * 1000)
+        try db.run("""
+            INSERT OR REPLACE INTO item_pinboards
+              (item_id, pinboard_id, updated_at, deleted_at, device_id)
+            VALUES (?,?,?,?,?)
+            """, [.text(item.uuidString), .text(board.uuidString), .int(millis),
+                  on ? .null : .int(millis), .text(deviceID)])
+    }
+
+    /// Every item filed on any board. Retention must not expire these.
+    func pinnedItemIDs() throws -> Set<UUID> {
+        var out: Set<UUID> = []
+        for row in try db.query("""
+            SELECT DISTINCT item_id FROM item_pinboards WHERE deleted_at IS NULL
+            """, []) {
+            if case .text(let s)? = row["item_id"], let id = UUID(uuidString: s) {
+                out.insert(id)
+            }
+        }
+        return out
+    }
 }

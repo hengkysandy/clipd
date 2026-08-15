@@ -100,6 +100,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         panelController = PanelController(history: history)
+        panelController.boardProvider = { [weak self] in
+            guard let store = self?.store else { return ([], [:]) }
+            return ((try? store.allPinboards()) ?? [], (try? store.membership()) ?? [:])
+        }
+        panelController.onCreateBoard = { [weak self] name in
+            try? self?.store?.createPinboard(name: name)
+        }
+        panelController.onDeleteBoard = { [weak self] id in
+            try? self?.store?.deletePinboard(id: id)
+        }
+        panelController.onToggleMembership = { [weak self] item, board in
+            guard let store = self?.store else { return }
+            let already = ((try? store.membership())?[board] ?? []).contains(item)
+            try? store.setMembership(item: item, board: board, on: !already)
+            Diag.panel.info("board membership now \(!already, privacy: .public)")
+        }
         panelController.onCommit = { item, target in
             let ok = Paster.paste(item, into: target)
             if ok { Sounds.pasted() }
@@ -319,8 +335,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// by even a minute.
     private func runRetentionSweep() {
         guard let store, settings.retention != .forever else { return }
+        // Anything filed on a board is exempt. This is what the pinned
+        // argument was always for; it was empty until boards existed.
+        let pinned = (try? store.pinnedItemIDs()) ?? []
         let doomed = itemsToExpire(history.items, policy: settings.retention,
-                                   pinned: [], now: Date())
+                                   pinned: pinned, now: Date())
         guard !doomed.isEmpty else { return }
         do {
             try store.expire(ids: doomed, at: Date())
