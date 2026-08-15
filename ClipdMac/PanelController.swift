@@ -12,14 +12,22 @@ private final class ClipdPanel: NSPanel {
     /// Rejected: drag and drop, slower than a keystroke for the case this app
     /// is for. Rejected: a context menu, which needs the mouse.
     var onNumberKey: ((Int) -> Bool)?
+    /// Cmd+Left and Cmd+Right move between boards. Plain arrows already move
+    /// between cards, so the modifier is what separates the two axes.
+    var onBoardStep: ((Int) -> Bool)?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if event.modifierFlags.contains(.command),
-           let characters = event.charactersIgnoringModifiers,
+        guard event.modifierFlags.contains(.command) else {
+            return super.performKeyEquivalent(with: event)
+        }
+        if let characters = event.charactersIgnoringModifiers,
            let digit = Int(characters), digit >= 1, digit <= 9,
            onNumberKey?(digit) == true {
             return true
         }
+        // 123 is left arrow, 124 is right arrow.
+        if event.keyCode == 123, onBoardStep?(-1) == true { return true }
+        if event.keyCode == 124, onBoardStep?(1) == true { return true }
         return super.performKeyEquivalent(with: event)
     }
 }
@@ -63,6 +71,7 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     /// into whatever app was behind. Click-away must still close the panel, so
     /// the flag is narrower than disabling the handler.
     private var isPresentingModal = false
+    private var emptyLabel: NSTextField!
     private var tabs: BoardTabsView!
     private var boards: [Pinboard] = []
     private var membership: [UUID: Set<UUID>] = [:]
@@ -72,6 +81,7 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     var boardProvider: () -> ([Pinboard], [UUID: Set<UUID>]) = { ([], [:]) }
     var onCreateBoard: ((String) -> Void)?
     var onDeleteBoard: ((UUID) -> Void)?
+    var onRenameBoard: ((UUID, String) -> Void)?
     var onToggleMembership: ((UUID, UUID) -> Void)?
 
     /// The app that was frontmost when the panel opened. Everything depends on
@@ -135,6 +145,21 @@ final class PanelController: NSObject, NSTextFieldDelegate,
             return true
         }
 
+        panel.onBoardStep = { [weak self] step in
+            guard let self, !self.boards.isEmpty else { return false }
+            // Clipboard sits at index 0, so the list is boards.count + 1 wide
+            // and wraps at both ends.
+            let current = self.selectedBoard.flatMap { id in
+                self.boards.firstIndex { $0.id == id }.map { $0 + 1 }
+            } ?? 0
+            let count = self.boards.count + 1
+            let next = ((current + step) % count + count) % count
+            self.selectedBoard = next == 0 ? nil : self.boards[next - 1].id
+            self.refreshTabs()
+            self.reload()
+            return true
+        }
+
         NotificationCenter.default.addObserver(
             self, selector: #selector(panelResignedKey),
             name: NSWindow.didResignKeyNotification, object: panel)
@@ -176,6 +201,7 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         }
         tabs.onCreate = { [weak self] in self?.promptForNewBoard() }
         tabs.onDelete = { [weak self] id in self?.confirmDeleteBoard(id) }
+        tabs.onRename = { [weak self] id in self?.promptToRenameBoard(id) }
         content.addSubview(tabs)
 
         // The loud failure. Without Accessibility, macOS discards every
@@ -222,6 +248,18 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         scroll.drawsBackground = false
         scroll.autohidesScrollers = true
         content.addSubview(scroll)
+
+        // An empty panel with nothing in it reads as broken. Say which of the
+        // three empty cases it is, because they need different actions from
+        // the user.
+        emptyLabel = NSTextField(labelWithString: "")
+        emptyLabel.frame = NSRect(x: 0, y: scroll.frame.midY - 20,
+                                  width: width, height: 40)
+        emptyLabel.alignment = .center
+        emptyLabel.font = .systemFont(ofSize: 13)
+        emptyLabel.textColor = .secondaryLabelColor
+        emptyLabel.isHidden = true
+        content.addSubview(emptyLabel)
 
     }
 
@@ -323,6 +361,20 @@ final class PanelController: NSObject, NSTextFieldDelegate,
 
     // MARK: - Data
 
+    private func updateEmptyState(board: Pinboard?) {
+        emptyLabel.isHidden = !results.isEmpty
+        guard results.isEmpty else { return }
+        let query = field.stringValue.trimmingCharacters(in: .whitespaces)
+        if !query.isEmpty {
+            emptyLabel.stringValue = "Nothing matches \"\(query)\"."
+        } else if let board {
+            emptyLabel.stringValue = "Nothing pinned to \(board.name) yet. "
+                + "Select a card on Clipboard, then right click and choose Pin."
+        } else {
+            emptyLabel.stringValue = "Nothing copied yet. Copy something and it appears here."
+        }
+    }
+
     private func refreshTabs() {
         tabs.update(boards: boards, selected: selectedBoard)
     }
@@ -332,6 +384,7 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         let board = boards.first { $0.id == selectedBoard }
         results = itemsOn(board, items: all, membership: membership)
         collection.reloadData()
+        updateEmptyState(board: board)
         selection = 0
         applySelection(scroll: false)
     }
@@ -361,7 +414,14 @@ final class PanelController: NSObject, NSTextFieldDelegate,
             commitSelection()
             return true
         case #selector(NSResponder.cancelOperation(_:)):
-            dismiss()
+            // Clear a search first, close second. Otherwise Escape throws away
+            // the panel when you only wanted to undo a typo.
+            if !field.stringValue.isEmpty {
+                field.stringValue = ""
+                reload()
+            } else {
+                dismiss()
+            }
             return true
         // Left and right, because the history is a horizontal strip. This does
         // cost cursor movement inside the search field, which is the accepted
@@ -431,6 +491,132 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         commitDelete(of: doomed)
     }
 
+    // MARK: - Card menu
+
+    /// A small colour swatch for a board's menu entry.
+    ///
+    /// Built here rather than shipped as art, so a new palette colour needs no
+    /// new asset.
+    private func dot(_ colorName: String) -> NSImage {
+        let size = NSSize(width: 10, height: 10)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        BoardTabsView.color(named: colorName).setFill()
+        NSBezierPath(ovalIn: NSRect(origin: .zero, size: size)).fill()
+        image.unlockFocus()
+        return image
+    }
+
+    /// The right click menu on a card.
+    ///
+    /// Built at click time because it depends on which card was hit, which app
+    /// you came from, and which boards the item is already on.
+    ///
+    /// Deliberately omits "Paste as Plain Text" from the reference app: Clipd
+    /// captures plain text only today, so that command would be byte identical
+    /// to Paste, and a menu entry that does nothing is worse than none.
+    private func showCardMenu(index: Int, event: NSEvent) {
+        guard index >= 0, index < results.count else { return }
+        selection = index
+        applySelection(scroll: false)
+        let item = results[index]
+
+        let menu = NSMenu()
+
+        let target = previousApp?.localizedName ?? "the previous app"
+        let paste = NSMenuItem(title: "Paste to \(target)",
+                               action: #selector(menuPaste), keyEquivalent: "\r")
+        paste.keyEquivalentModifierMask = []
+        paste.target = self
+        menu.addItem(paste)
+
+        let copy = NSMenuItem(title: "Copy", action: #selector(menuCopy), keyEquivalent: "c")
+        copy.target = self
+        menu.addItem(copy)
+
+        menu.addItem(.separator())
+
+        // Pin, with a tick against every board this item is already on, so the
+        // same menu adds and removes.
+        let pin = NSMenuItem(title: "Pin", action: nil, keyEquivalent: "")
+        let boardMenu = NSMenu()
+        for (offset, board) in boards.enumerated() {
+            let entry = NSMenuItem(title: board.name,
+                                   action: #selector(menuTogglePin(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.image = dot(board.colorName)
+            entry.representedObject = board.id.uuidString
+            entry.state = (membership[board.id] ?? []).contains(item.id) ? .on : .off
+            // Show the shortcut that already exists, so the menu teaches it.
+            if offset < 9 {
+                entry.keyEquivalent = "\(offset + 1)"
+                entry.keyEquivalentModifierMask = .command
+            }
+            boardMenu.addItem(entry)
+        }
+        if !boards.isEmpty { boardMenu.addItem(.separator()) }
+        let create = NSMenuItem(title: "Create Pinboard...",
+                                action: #selector(menuCreateBoard), keyEquivalent: "")
+        create.target = self
+        boardMenu.addItem(create)
+        pin.submenu = boardMenu
+        menu.addItem(pin)
+
+        menu.addItem(.separator())
+
+        let delete = NSMenuItem(title: "Delete", action: #selector(menuDelete),
+                                keyEquivalent: String(UnicodeScalar(NSBackspaceCharacter)!))
+        delete.keyEquivalentModifierMask = []
+        delete.target = self
+        menu.addItem(delete)
+
+        // The menu takes key focus, which would otherwise fire the click-away
+        // dismissal and close the panel out from under it.
+        isPresentingModal = true
+        NSMenu.popUpContextMenu(menu, with: event, for: collection)
+        isPresentingModal = false
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(field)
+    }
+
+    @objc private func menuPaste() { commitSelection() }
+
+    /// Puts the item on the clipboard without pasting it.
+    ///
+    /// Rejected: doing this by pasting into a hidden field, which needs
+    /// Accessibility. Copy should work even when paste cannot.
+    @objc private func menuCopy() {
+        guard selection >= 0, selection < results.count else { return }
+        let item = results[selection]
+        hide(then: {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            if item.kind == .image, let data = item.imageData {
+                pasteboard.setData(data, forType: NSPasteboard.PasteboardType("public.png"))
+                if let tiff = NSImage(data: data)?.tiffRepresentation {
+                    pasteboard.setData(tiff, forType: .tiff)
+                }
+            } else {
+                pasteboard.setString(item.text, forType: .string)
+            }
+            Diag.panel.info("copied to the clipboard without pasting")
+        })
+    }
+
+    @objc private func menuDelete() { deleteSelected() }
+
+    @objc private func menuCreateBoard() { promptForNewBoard() }
+
+    @objc private func menuTogglePin(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let boardID = UUID(uuidString: raw),
+              selection >= 0, selection < results.count else { return }
+        onToggleMembership?(results[selection].id, boardID)
+        (boards, membership) = boardProvider()
+        refreshTabs()
+        reload()
+    }
+
     private func promptForNewBoard() {
         let alert = NSAlert()
         alert.messageText = "New pinboard"
@@ -452,6 +638,30 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         let name = input.stringValue.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return }
         onCreateBoard?(name)
+        (boards, membership) = boardProvider()
+        refreshTabs()
+        reload()
+    }
+
+    private func promptToRenameBoard(_ id: UUID) {
+        guard let board = boards.first(where: { $0.id == id }) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Rename pinboard"
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        input.stringValue = board.name
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = input
+        isPresentingModal = true
+        let response = alert.runModal()
+        isPresentingModal = false
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(field)
+        guard response == .alertFirstButtonReturn else { return }
+        let name = input.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        onRenameBoard?(id, name)
         (boards, membership) = boardProvider()
         refreshTabs()
         reload()
@@ -516,6 +726,9 @@ final class PanelController: NSObject, NSTextFieldDelegate,
             card.configure(with: results[indexPath.item], index: indexPath.item)
             card.onClick = { [weak self] index, clicks in
                 self?.handleCardClick(index: index, clickCount: clicks)
+            }
+            card.onRightClick = { [weak self] index, event in
+                self?.showCardMenu(index: index, event: event)
             }
         }
         return cell

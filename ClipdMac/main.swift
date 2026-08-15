@@ -110,6 +110,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelController.onDeleteBoard = { [weak self] id in
             try? self?.store?.deletePinboard(id: id)
         }
+        panelController.onRenameBoard = { [weak self] id, name in
+            try? self?.store?.renamePinboard(id: id, to: name)
+        }
         panelController.onToggleMembership = { [weak self] item, board in
             guard let store = self?.store else { return }
             let already = ((try? store.membership())?[board] ?? []).contains(item)

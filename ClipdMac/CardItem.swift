@@ -37,8 +37,19 @@ private let relativeFormatter: RelativeDateTimeFormatter = {
 /// collection view's internal hit testing.
 private final class CardRootView: NSView {
     var onClick: ((Int) -> Void)?
+    var onRightClick: ((NSEvent) -> Void)?
+
     override func mouseDown(with event: NSEvent) {
         onClick?(event.clickCount)
+    }
+
+    /// Right click and control click both open the card menu.
+    ///
+    /// Handled here rather than by setting `menu` on the view, because the menu
+    /// contents depend on which card was hit and on the current boards, so it
+    /// has to be built at click time.
+    override func rightMouseDown(with event: NSEvent) {
+        onRightClick?(event)
     }
 }
 
@@ -68,6 +79,8 @@ final class CardItem: NSCollectionViewItem {
 
     /// Called with (index, clickCount). One click selects, two activates.
     var onClick: ((Int, Int) -> Void)?
+    /// Called with (index, event) on a right or control click.
+    var onRightClick: ((Int, NSEvent) -> Void)?
 
     override func loadView() {
         let root = CardRootView(frame: NSRect(origin: .zero, size: CardItem.size))
@@ -75,6 +88,10 @@ final class CardItem: NSCollectionViewItem {
         root.onClick = { [weak self] count in
             guard let self else { return }
             self.onClick?(self.index, count)
+        }
+        root.onRightClick = { [weak self] event in
+            guard let self else { return }
+            self.onRightClick?(self.index, event)
         }
 
         card = NSView(frame: root.bounds)

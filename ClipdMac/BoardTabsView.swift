@@ -10,6 +10,7 @@ final class BoardTabsView: NSView {
     var onSelect: ((UUID?) -> Void)?
     var onCreate: (() -> Void)?
     var onDelete: ((UUID) -> Void)?
+    var onRename: ((UUID) -> Void)?
 
     private var boards: [Pinboard] = []
     private var selected: UUID?
@@ -91,6 +92,11 @@ final class BoardTabsView: NSView {
         // button on every tab that you would hit by accident.
         if let id {
             let menu = NSMenu()
+            let rename = NSMenuItem(title: "Rename...",
+                                    action: #selector(renameBoard(_:)), keyEquivalent: "")
+            rename.target = self
+            rename.representedObject = id.uuidString
+            menu.addItem(rename)
             let delete = NSMenuItem(title: "Delete \"\(title)\"",
                                     action: #selector(deleteBoard(_:)), keyEquivalent: "")
             delete.target = self
@@ -107,6 +113,12 @@ final class BoardTabsView: NSView {
     }
 
     @objc private func create() { onCreate?() }
+
+    @objc private func renameBoard(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let id = UUID(uuidString: raw) else { return }
+        onRename?(id)
+    }
 
     @objc private func deleteBoard(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
