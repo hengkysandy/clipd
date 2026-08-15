@@ -332,4 +332,91 @@ final class SQLiteStore {
         }
         return out
     }
+
+    // MARK: - Board sync
+
+    /// Boards as sync records, tombstones included, so the other Mac learns
+    /// about a deleted board rather than resurrecting it.
+    func boardRecords() throws -> [SyncRecord] {
+        try db.query("SELECT id, updated_at, deleted_at, device_id FROM pinboards", [])
+            .compactMap { row in
+                guard case .text(let s)? = row["id"], let id = UUID(uuidString: s),
+                      case .int(let updated)? = row["updated_at"],
+                      case .text(let device)? = row["device_id"] else { return nil }
+                var deletedAt: Date?
+                if case .int(let d)? = row["deleted_at"] {
+                    deletedAt = Date(timeIntervalSince1970: Double(d) / 1000)
+                }
+                return SyncRecord(id: id,
+                                  updatedAt: Date(timeIntervalSince1970: Double(updated) / 1000),
+                                  deletedAt: deletedAt, deviceID: device)
+            }
+    }
+
+    /// A board plus its memberships, so the two cannot arrive separately.
+    func boardPayload(for id: UUID) throws -> Data? {
+        let rows = try db.query("""
+            SELECT id, name, color, sort_order, updated_at, deleted_at, device_id
+            FROM pinboards WHERE id = ?
+            """, [.text(id.uuidString)])
+        guard let row = rows.first else { return nil }
+        var json: [String: Any] = [:]
+        for (name, value) in row {
+            switch value {
+            case .text(let s): json[name] = s
+            case .int(let n): json[name] = n
+            case .blob, .null: break
+            }
+        }
+        var members: [[String: Any]] = []
+        for m in try db.query("""
+            SELECT item_id, updated_at, deleted_at, device_id
+            FROM item_pinboards WHERE pinboard_id = ?
+            """, [.text(id.uuidString)]) {
+            var entry: [String: Any] = [:]
+            for (name, value) in m {
+                switch value {
+                case .text(let s): entry[name] = s
+                case .int(let n): entry[name] = n
+                case .blob, .null: break
+                }
+            }
+            members.append(entry)
+        }
+        json["members"] = members
+        return try JSONSerialization.data(withJSONObject: json)
+    }
+
+    func applyBoard(payload: Data) throws {
+        guard let json = try JSONSerialization.jsonObject(with: payload) as? [String: Any],
+              let idString = json["id"] as? String, let id = UUID(uuidString: idString) else {
+            return
+        }
+        func text(_ k: String) -> SQLValue { (json[k] as? String).map { SQLValue.text($0) } ?? .null }
+        func int(_ k: String) -> SQLValue {
+            (json[k] as? Int64).map { SQLValue.int($0) }
+                ?? (json[k] as? Int).map { SQLValue.int(Int64($0)) } ?? .null
+        }
+        try db.run("""
+            INSERT OR REPLACE INTO pinboards
+              (id, name, color, sort_order, updated_at, deleted_at, device_id)
+            VALUES (?,?,?,?,?,?,?)
+            """, [.text(id.uuidString), text("name"), text("color"), int("sort_order"),
+                  int("updated_at"), int("deleted_at"), text("device_id")])
+
+        for entry in (json["members"] as? [[String: Any]] ?? []) {
+            guard let itemString = entry["item_id"] as? String else { continue }
+            func mText(_ k: String) -> SQLValue { (entry[k] as? String).map { SQLValue.text($0) } ?? .null }
+            func mInt(_ k: String) -> SQLValue {
+                (entry[k] as? Int64).map { SQLValue.int($0) }
+                    ?? (entry[k] as? Int).map { SQLValue.int(Int64($0)) } ?? .null
+            }
+            try db.run("""
+                INSERT OR REPLACE INTO item_pinboards
+                  (item_id, pinboard_id, updated_at, deleted_at, device_id)
+                VALUES (?,?,?,?,?)
+                """, [.text(itemString), .text(id.uuidString), mInt("updated_at"),
+                      mInt("deleted_at"), mText("device_id")])
+        }
+    }
 }

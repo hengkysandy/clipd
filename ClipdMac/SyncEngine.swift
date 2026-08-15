@@ -88,8 +88,39 @@ final class SyncEngine {
             }
         }
 
+        // Boards, by exactly the same rules. Kept separate from items so a
+        // board can never be mistaken for a clipping.
+        var remoteBoards: [SyncRecord] = []
+        for manifestKey in try await client.list(prefix: prefix + "manifests/")
+        where !manifestKey.hasSuffix("\(deviceID).json.enc") {
+            guard let sealed = try await client.get(manifestKey),
+                  let plain = try? SyncCrypto.open(sealed, with: key),
+                  let manifest = try? JSONDecoder().decode(SyncManifest.self, from: plain)
+            else { continue }
+            remoteBoards.append(contentsOf: manifest.boards)
+        }
+
+        for action in planSync(local: try store.boardRecords(), remote: remoteBoards) {
+            switch action {
+            case .upload(let id):
+                guard let payload = try store.boardPayload(for: id) else { continue }
+                _ = try await client.put(prefix + "boards/\(id.uuidString).enc",
+                                         try SyncCrypto.seal(payload, with: key))
+            case .download(let id), .applyTombstone(let id):
+                // Even a tombstoned board needs its payload: the row carries the
+                // deleted_at that makes it a tombstone locally.
+                guard let sealed = try await client.get(prefix + "boards/\(id.uuidString).enc")
+                else { continue }
+                try store.applyBoard(payload: try SyncCrypto.open(sealed, with: key))
+            case .nothing:
+                break
+            }
+        }
+
         // Our manifest last, so it only ever claims things we really uploaded.
-        let manifest = SyncManifest(deviceID: deviceID, records: try store.allRecords())
+        let manifest = SyncManifest(deviceID: deviceID,
+                                    records: try store.allRecords(),
+                                    boards: try store.boardRecords())
         let sealed = try SyncCrypto.seal(try JSONEncoder().encode(manifest), with: key)
         _ = try await client.put(prefix + "manifests/\(deviceID).json.enc", sealed)
 

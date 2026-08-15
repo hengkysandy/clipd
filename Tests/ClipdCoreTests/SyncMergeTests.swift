@@ -129,3 +129,15 @@ func manifestCodable() throws {
     let data = try JSONEncoder().encode(manifest)
     #expect(try JSONDecoder().decode(SyncManifest.self, from: data) == manifest)
 }
+
+@Test("A manifest from an older build, with no boards, still decodes")
+func manifestBackwardCompatible() {
+    // The other Mac may be a version behind. Failing to decode would strand
+    // the pair, each unable to read the other.
+    let json = Data("""
+        {"deviceID":"A","records":[]}
+        """.utf8)
+    let manifest = try? JSONDecoder().decode(SyncManifest.self, from: json)
+    #expect(manifest?.deviceID == "A")
+    #expect(manifest?.boards.isEmpty == true)
+}

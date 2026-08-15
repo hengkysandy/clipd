@@ -19,10 +19,33 @@ public struct SyncRecord: Codable, Equatable, Sendable {
 public struct SyncManifest: Codable, Equatable, Sendable {
     public let deviceID: String
     public let records: [SyncRecord]
+    /// Boards and memberships, merged by exactly the same rules as items.
+    ///
+    /// Defaulted so a manifest written by an older build still decodes. Failing
+    /// to decode would strand the pair, each unable to read the other.
+    public var boards: [SyncRecord] = []
 
-    public init(deviceID: String, records: [SyncRecord]) {
+    public init(deviceID: String, records: [SyncRecord], boards: [SyncRecord] = []) {
         self.deviceID = deviceID
         self.records = records
+        self.boards = boards
+    }
+
+    /// Written by hand because Swift's synthesized Decodable does NOT fall back
+    /// to a property's default value when the key is missing: it throws.
+    ///
+    /// Measured: a manifest from a build without boards failed to decode at all,
+    /// which would strand a pair of Macs on different versions, each unable to
+    /// read the other. decodeIfPresent is the whole fix.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        deviceID = try container.decode(String.self, forKey: .deviceID)
+        records = try container.decode([SyncRecord].self, forKey: .records)
+        boards = try container.decodeIfPresent([SyncRecord].self, forKey: .boards) ?? []
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case deviceID, records, boards
     }
 }
 
