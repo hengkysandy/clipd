@@ -88,8 +88,24 @@ final class SyncPane: NSViewController {
         view = root
     }
 
+    /// Reloads the form from the Keychain every time the pane appears.
+    ///
+    /// The settings window controller is retained and reused, so without this
+    /// an edit you made and did not save is still sitting in the field the next
+    /// time you open it. That is worse than merely untidy: you could reopen,
+    /// see a value you never saved, and press Save over your real credentials.
+    override func viewWillAppear() {
+        super.viewWillAppear()
+        loadExisting()
+    }
+
     private func loadExisting() {
+        secretField.stringValue = ""
+        passphraseField.stringValue = ""
         guard let (credentials, _) = try? SyncCredentialStore.load() else {
+            accountField.stringValue = ""
+            keyField.stringValue = ""
+            bucketField.stringValue = ""
             statusLabel.stringValue = "Not configured."
             return
         }

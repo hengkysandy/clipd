@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastPausedFlag = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        installEditMenu()
         openStore()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         rebuildMenu()   // sets the icon too
@@ -379,6 +380,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await MainActor.run { report("Sync failed: \(error)") }
             }
         }
+    }
+
+    /// Gives the app an Edit menu so Cmd+C, Cmd+V, Cmd+X and Cmd+A work in
+    /// text fields.
+    ///
+    /// A menu bar only app has no main menu by default, and those shortcuts are
+    /// implemented BY the Edit menu, not by the text field. Without this you can
+    /// paste into Settings only by right clicking, which is how the bug was
+    /// reported. Rejected: overriding performKeyEquivalent on each window, which
+    /// would need repeating for every window and would still miss Undo.
+    ///
+    /// The menu bar is not displayed for an accessory app, so this costs no
+    /// screen space. It exists purely to carry the key equivalents.
+    private func installEditMenu() {
+        let mainMenu = NSMenu()
+
+        // The first item is the application menu. macOS requires it to exist
+        // even when nothing is drawn.
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Quit Clipd", action: #selector(NSApplication.terminate(_:)),
+                        keyEquivalent: "q")
+        appItem.submenu = appMenu
+        mainMenu.addItem(appItem)
+
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        // nil target means these travel the responder chain to whatever text
+        // field is focused, which is exactly what the standard Edit menu does.
+        let entries: [(String, Selector, String, NSEvent.ModifierFlags)] = [
+            ("Undo", Selector(("undo:")), "z", .command),
+            ("Redo", Selector(("redo:")), "z", [.command, .shift]),
+            ("Cut", #selector(NSText.cut(_:)), "x", .command),
+            ("Copy", #selector(NSText.copy(_:)), "c", .command),
+            ("Paste", #selector(NSText.paste(_:)), "v", .command),
+            ("Select All", #selector(NSText.selectAll(_:)), "a", .command),
+        ]
+        for (title, action, key, flags) in entries {
+            if title == "Cut" { editMenu.addItem(.separator()) }
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = flags
+            editMenu.addItem(item)
+        }
+        editItem.submenu = editMenu
+        mainMenu.addItem(editItem)
+
+        NSApp.mainMenu = mainMenu
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
