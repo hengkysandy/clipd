@@ -139,11 +139,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(pauseItem)
         }
 
-        let sound = NSMenuItem(title: "Sound effects",
-                               action: #selector(toggleSound), keyEquivalent: "")
-        sound.target = self
-        sound.state = Sounds.enabled ? .on : .off
-        menu.addItem(sound)
+        menu.addItem(soundMenu(title: "Copy sound", slot: .capture))
+        menu.addItem(soundMenu(title: "Paste sound", slot: .paste))
 
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Clipd", action: #selector(quit), keyEquivalent: "q")
@@ -168,8 +165,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
-    @objc private func toggleSound() {
-        Sounds.enabled.toggle()
+    /// A submenu listing every system sound plus Off, with the current choice
+    /// ticked. Choosing one plays it immediately, because picking a sound from
+    /// a list of names you cannot hear is guesswork.
+    private func soundMenu(title: String, slot: Sounds.Slot) -> NSMenuItem {
+        let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        let current = Sounds.name(for: slot)
+
+        let off = NSMenuItem(title: "Off", action: #selector(chooseSound(_:)), keyEquivalent: "")
+        off.target = self
+        off.representedObject = [slot.rawValue, ""]
+        off.state = current == nil ? .on : .off
+        submenu.addItem(off)
+        submenu.addItem(.separator())
+
+        for name in Sounds.available {
+            let entry = NSMenuItem(title: name, action: #selector(chooseSound(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = [slot.rawValue, name]
+            entry.state = current == name ? .on : .off
+            submenu.addItem(entry)
+        }
+        parent.submenu = submenu
+        return parent
+    }
+
+    @objc private func chooseSound(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2,
+              let slot = Sounds.Slot(rawValue: pair[0]) else { return }
+        let name = pair[1].isEmpty ? nil : pair[1]
+        Sounds.setName(name, for: slot)
+        if let name { Sounds.play(named: name) }
+        Diag.capture.info("sound for \(slot.rawValue, privacy: .public) set to \(name ?? "off", privacy: .public)")
         rebuildMenu()
     }
 
