@@ -10,6 +10,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let history = History()
     private var pause = PauseState.running
     private var pauseTicker: Timer?
+    private var settings = AppSettings()
+    private var settingsWindow: SettingsWindowController?
+    private var retentionTimer: Timer?
     private var database: Database?
     private var store: SQLiteStore?
     private var lastPausedFlag = false
@@ -53,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // is a strong signal the captured item was a secret we failed
                 // to recognise. 90s rather than 60s, because "about a minute"
                 // is not exact and the margin is free.
-                if case .emptyChange = reason,
+                if case .emptyChange = reason, self.settings.autoClearEnabled,
                    let newest = self.history.items.first,
                    Date().timeIntervalSince(newest.createdAt) < 90 {
                     self.history.removeMostRecent()
@@ -63,6 +66,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             })
         watcher.isPaused = { [weak self] in
             self?.pause.isPaused(now: Date()) ?? false
+        }
+        // Rebuild capture settings whenever the user changes them, so a newly
+        // ignored app takes effect on the next copy rather than after a restart.
+        watcher.settingsProvider = { [weak self] in
+            self?.settings.captureSettings ?? .standard
+        }
+        settings.onChange = { [weak self] in
+            Diag.capture.info("settings changed, capture rules reloaded")
+            self?.rebuildMenu()
         }
         watcher.start()
 
@@ -144,6 +156,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(soundMenu(title: "Copy sound", slot: .capture))
         menu.addItem(soundMenu(title: "Paste sound", slot: .paste))
+
+        let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings),
+                                      keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
 
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Clipd", action: #selector(quit), keyEquivalent: "q")
@@ -265,6 +282,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             self.database = db
             self.store = store
+            runRetentionSweep()
+            retentionTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.runRetentionSweep() }
+            }
             Diag.capture.info("store opened, \(self.history.items.count, privacy: .public) items restored")
         } catch {
             // Loud, not silent. A failed store means every copy is lost on quit,
@@ -281,6 +302,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fresh = UUID().uuidString
         UserDefaults.standard.set(fresh, forKey: key)
         return fresh
+    }
+
+    /// Expires anything past the retention setting.
+    ///
+    /// Runs at launch and hourly. Rejected: sweeping on every capture, which
+    /// would walk the whole history on every Cmd+C for a job that is not urgent
+    /// by even a minute.
+    private func runRetentionSweep() {
+        guard let store, settings.retention != .forever else { return }
+        let doomed = itemsToExpire(history.items, policy: settings.retention,
+                                   pinned: [], now: Date())
+        guard !doomed.isEmpty else { return }
+        do {
+            try store.expire(ids: doomed, at: Date())
+            let survivors = try store.loadAll(limit: 500)
+            history.load(survivors)
+            Diag.capture.info("retention swept \(doomed.count, privacy: .public) items, \(survivors.count, privacy: .public) remain")
+            rebuildMenu()
+        } catch {
+            Diag.capture.error("retention sweep failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    @objc private func openSettings() {
+        if settingsWindow == nil {
+            settingsWindow = SettingsWindowController(settings: settings, onErase: { [weak self] in
+                self?.eraseAllHistory()
+            })
+        }
+        settingsWindow?.show()
+    }
+
+    private func eraseAllHistory() {
+        do {
+            try store?.eraseAll()
+            history.removeAll()
+            Diag.capture.info("history erased by the user")
+            rebuildMenu()
+        } catch {
+            Diag.capture.error("erase failed: \(String(describing: error), privacy: .public)")
+        }
     }
 
     @objc private func quit() { NSApp.terminate(nil) }

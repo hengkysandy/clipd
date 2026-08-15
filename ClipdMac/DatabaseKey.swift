@@ -10,7 +10,13 @@ import Security
 /// v1.1 sync adds a separate user passphrase for the R2 payload, because that
 /// data leaves the machine and this key does not.
 enum DatabaseKey {
-    private static let service = "com.hengkysandy.clipd.mac"
+    /// The real service name. Parameterised so tests can use their own.
+    ///
+    /// Learned the hard way: the tests originally used this same service, so
+    /// running the suite tried to delete and regenerate the running app's
+    /// actual database key. macOS refused the delete, which is the only reason
+    /// a real history was not made permanently unreadable.
+    static let defaultService = "com.hengkysandy.clipd.mac"
     private static let account = "database-key"
 
     enum KeyError: Error {
@@ -18,10 +24,10 @@ enum DatabaseKey {
         case malformedData
     }
 
-    static func loadOrCreate() throws -> String {
-        if let existing = try load() { return existing }
+    static func loadOrCreate(service: String = defaultService) throws -> String {
+        if let existing = try load(service: service) { return existing }
         let key = randomHexKey()
-        try store(key)
+        try store(key, service: service)
         return key
     }
 
@@ -34,7 +40,7 @@ enum DatabaseKey {
         return bytes.map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func load() throws -> String? {
+    private static func load(service: String) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -52,7 +58,7 @@ enum DatabaseKey {
         return key
     }
 
-    private static func store(_ key: String) throws {
+    private static func store(_ key: String, service: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -66,7 +72,7 @@ enum DatabaseKey {
         guard status == errSecSuccess else { throw KeyError.unexpectedStatus(status) }
     }
 
-    static func delete() throws {
+    static func delete(service: String = defaultService) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

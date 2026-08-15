@@ -116,4 +116,42 @@ final class SQLiteStore {
             SELECT rowid, text_content, preview FROM items WHERE id = ?
             """, [.text(id.uuidString)])
     }
+
+    /// Retention sweep. A tombstone, not a hard delete, so a v1.1 sync cannot
+    /// resurrect an item this Mac expired. The blob goes immediately though:
+    /// a tombstone that leaves a 2.8 MB encrypted screenshot on disk is not a
+    /// delete in any sense the user would recognise.
+    func expire(ids: [UUID], at date: Date) throws {
+        guard !ids.isEmpty else { return }
+        let millis = Int64(date.timeIntervalSince1970 * 1000)
+        for id in ids {
+            let rows = try db.query("SELECT blob_ref FROM items WHERE id = ?",
+                                    [.text(id.uuidString)])
+            if case .text(let ref)? = rows.first?["blob_ref"] {
+                try? blobs.delete(ref)
+            }
+            try db.run("""
+                UPDATE items SET deleted_at = ?, updated_at = ?, blob_ref = NULL
+                WHERE id = ?
+                """, [.int(millis), .int(millis), .text(id.uuidString)])
+            try db.run("""
+                DELETE FROM items_fts
+                WHERE rowid IN (SELECT rowid FROM items WHERE id = ?)
+                """, [.text(id.uuidString)])
+        }
+    }
+
+    /// Erase History. Removes every row and every blob outright.
+    ///
+    /// Hard delete, not tombstones. The user asked for the data to be gone, and
+    /// leaving a tombstone for every item they just erased would ship their
+    /// entire history shape to R2 in v1.1.
+    func eraseAll() throws {
+        let rows = try db.query("SELECT blob_ref FROM items WHERE blob_ref IS NOT NULL", [])
+        for row in rows {
+            if case .text(let ref)? = row["blob_ref"] { try? blobs.delete(ref) }
+        }
+        try db.execute("DELETE FROM items_fts")
+        try db.execute("DELETE FROM items")
+    }
 }

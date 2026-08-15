@@ -11,15 +11,18 @@ final class PasteboardWatcher {
     private let pasteboard = NSPasteboard.general
     private var lastChangeCount: Int
     private var timer: Timer?
-    private let settings: CaptureSettings
+
+    /// Read fresh on every poll, so a settings change applies to the next copy
+    /// with no restart. Rejected: capturing CaptureSettings once at init, which
+    /// meant a newly ignored app only took effect after relaunching, and a
+    /// setting that needs a restart reads as a setting that does not work.
+    var settingsProvider: () -> CaptureSettings = { .standard }
 
     private let onCapture: (HistoryItem) -> Void
     private let onRefusal: (CaptureRefusal) -> Void
 
-    init(settings: CaptureSettings = .standard,
-         onCapture: @escaping (HistoryItem) -> Void,
+    init(onCapture: @escaping (HistoryItem) -> Void,
          onRefusal: @escaping (CaptureRefusal) -> Void) {
-        self.settings = settings
         self.onCapture = onCapture
         self.onRefusal = onRefusal
         self.lastChangeCount = NSPasteboard.general.changeCount
@@ -66,7 +69,7 @@ final class PasteboardWatcher {
             types: types, totalBytes: totalBytes, itemCount: items.count,
             sourceBundleID: front?.bundleIdentifier)
 
-        switch decideCapture(snapshot, settings: settings) {
+        switch decideCapture(snapshot, settings: settingsProvider()) {
         case .refuse(let reason):
             // NEVER log the value. Types, sizes and reasons only. During
             // probing a diagnostic printed a text preview and wrote a real

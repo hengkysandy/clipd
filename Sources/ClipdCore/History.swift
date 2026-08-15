@@ -27,6 +27,13 @@ public final class History {
         storage = items
     }
 
+    /// Clears the in-memory cache. Used by Erase History, after the store has
+    /// already been emptied. Does not fire onDelete for each item: the caller
+    /// erased the database in one operation, not row by row.
+    public func removeAll() {
+        storage.removeAll()
+    }
+
     /// Newest first.
     public var items: [HistoryItem] { storage }
 
