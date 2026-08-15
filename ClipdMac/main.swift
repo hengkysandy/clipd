@@ -13,6 +13,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settings = AppSettings()
     private var settingsWindow: SettingsWindowController?
     private var retentionTimer: Timer?
+    private var syncTimer: Timer?
+    private var syncDebounce: Timer?
+    private var isSyncing = false
+    private(set) var lastSyncAt: Date?
+    private(set) var lastSyncSummary: String?
     private var database: Database?
     private var store: SQLiteStore?
     private var lastPausedFlag = false
@@ -46,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     \(self.history.items.count, privacy: .public) in history
                     """)
                 self.rebuildMenu()
+                self.scheduleAutoSync()
             },
             onRefusal: { [weak self] reason in
                 guard let self else { return }
@@ -287,6 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             retentionTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.runRetentionSweep() }
             }
+            startAutoSync()
             Diag.capture.info("store opened, \(self.history.items.count, privacy: .public) items restored")
         } catch {
             // Loud, not silent. A failed store means every copy is lost on quit,
@@ -331,6 +338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindow = SettingsWindowController(
                 settings: settings,
                 onErase: { [weak self] in self?.eraseAllHistory() },
+                lastSync: { [weak self] in (self?.lastSyncAt, self?.lastSyncSummary) },
                 onSyncNow: { [weak self] credentials, passphrase, report in
                     self?.runSync(credentials: credentials, passphrase: passphrase, report: report)
                 })
@@ -356,6 +364,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func runSync(credentials: R2Credentials, passphrase: String,
                          report: @escaping (String) -> Void) {
         guard let store else { report("The local store is not open."); return }
+        // One pass at a time. Two overlapping passes would each write a
+        // manifest, and the later one could claim items the earlier one had not
+        // finished uploading.
+        guard !isSyncing else { report("A sync is already running."); return }
+        isSyncing = true
         let deviceID = Self.deviceIdentifier()
         Task {
             do {
@@ -369,6 +382,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Diag.sync.info("sync ok: up \(summary.uploaded, privacy: .public), down \(summary.downloaded, privacy: .public), tombstones \(summary.tombstoned, privacy: .public)")
                 await MainActor.run {
                     self.history.load(refreshed)
+                    self.isSyncing = false
+                    self.lastSyncAt = Date()
+                    self.lastSyncSummary = "\(summary.uploaded) up, \(summary.downloaded) down, "
+                        + "\(summary.tombstoned) deleted, \(refreshed.count) items"
                     self.rebuildMenu()
                     report("Synced. \(summary.uploaded) uploaded, \(summary.downloaded) downloaded, "
                            + "\(summary.tombstoned) deleted. \(refreshed.count) items here now.")
@@ -377,7 +394,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Loud. A silent sync failure means the other Mac quietly
                 // diverges and nobody notices for weeks.
                 Diag.sync.error("sync failed: \(String(describing: error), privacy: .public)")
-                await MainActor.run { report("Sync failed: \(error)") }
+                await MainActor.run {
+                    self.isSyncing = false
+                    self.lastSyncSummary = "failed"
+                    report("Sync failed: \(error)")
+                }
             }
         }
     }
@@ -427,6 +448,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(editItem)
 
         NSApp.mainMenu = mainMenu
+    }
+
+    // MARK: - Automatic sync
+
+    /// Three triggers: shortly after launch, every 5 minutes, and a debounced
+    /// pass after you stop copying.
+    ///
+    /// Rejected: syncing on every single copy, which puts a network round trip
+    /// on the Cmd+C path. Rejected: syncing only on a timer, which means a
+    /// thing you copy and immediately want on the other Mac waits up to five
+    /// minutes.
+    private func startAutoSync() {
+        // A short delay at launch so the first pass does not compete with the
+        // rest of startup.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            self?.autoSync(reason: "launch")
+        }
+        syncTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.autoSync(reason: "timer") }
+        }
+    }
+
+    /// Called after every capture. Waits for you to stop copying, so pasting a
+    /// run of things produces one sync rather than ten.
+    private func scheduleAutoSync() {
+        guard settings.autoSyncEnabled else { return }
+        syncDebounce?.invalidate()
+        syncDebounce = Timer.scheduledTimer(withTimeInterval: 15, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.autoSync(reason: "after a copy") }
+        }
+    }
+
+    private func autoSync(reason: String) {
+        guard settings.autoSyncEnabled else { return }
+        // Silently does nothing until sync is actually configured.
+        guard let (credentials, passphrase) = try? SyncCredentialStore.load() else { return }
+        Diag.sync.info("auto sync starting (\(reason, privacy: .public))")
+        runSync(credentials: credentials, passphrase: passphrase, report: { _ in })
     }
 
     @objc private func quit() { NSApp.terminate(nil) }

@@ -12,6 +12,7 @@ final class AppSettings {
         static let autoClear = "clipd.autoClearEnabled"
         static let ignored = "clipd.ignoredBundleIDs"
         static let ignoredSeeded = "clipd.ignoredSeeded"
+        static let autoSync = "clipd.autoSyncEnabled"
     }
 
     /// Measured: Apple's Passwords.app sets no concealed marker at all, so for
@@ -63,6 +64,19 @@ final class AppSettings {
         }
         set {
             defaults.set(newValue, forKey: Key.autoClear)
+            onChange?()
+        }
+    }
+
+    /// Defaults to on. Sync only ever runs when credentials are configured, so
+    /// this does nothing until the user sets sync up deliberately.
+    var autoSyncEnabled: Bool {
+        get {
+            if defaults.object(forKey: Key.autoSync) == nil { return true }
+            return defaults.bool(forKey: Key.autoSync)
+        }
+        set {
+            defaults.set(newValue, forKey: Key.autoSync)
             onChange?()
         }
     }

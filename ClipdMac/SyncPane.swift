@@ -4,6 +4,9 @@ import ClipdCore
 /// Sync settings: R2 credentials, the shared passphrase, and a manual sync.
 final class SyncPane: NSViewController {
     private let onSyncNow: (R2Credentials, String, @escaping (String) -> Void) -> Void
+    private let settings: AppSettings
+    private let lastSync: () -> (Date?, String?)
+    private var autoBox: NSButton!
 
     private var accountField: NSTextField!
     private var keyField: NSTextField!
@@ -12,7 +15,11 @@ final class SyncPane: NSViewController {
     private var passphraseField: NSSecureTextField!
     private var statusLabel: NSTextField!
 
-    init(onSyncNow: @escaping (R2Credentials, String, @escaping (String) -> Void) -> Void) {
+    init(settings: AppSettings,
+         lastSync: @escaping () -> (Date?, String?),
+         onSyncNow: @escaping (R2Credentials, String, @escaping (String) -> Void) -> Void) {
+        self.settings = settings
+        self.lastSync = lastSync
         self.onSyncNow = onSyncNow
         super.init(nibName: nil, bundle: nil)
         title = "Sync"
@@ -60,6 +67,13 @@ final class SyncPane: NSViewController {
         warning.textColor = .secondaryLabelColor
         root.addSubview(warning)
 
+        autoBox = NSButton(checkboxWithTitle:
+            "Sync automatically: at launch, every 5 minutes, and after you stop copying",
+            target: self, action: #selector(toggleAuto(_:)))
+        autoBox.frame = NSRect(x: 24, y: 104, width: 472, height: 20)
+        autoBox.state = settings.autoSyncEnabled ? .on : .off
+        root.addSubview(autoBox)
+
         statusLabel = NSTextField(wrappingLabelWithString: "Not configured.")
         statusLabel.frame = NSRect(x: 24, y: 62, width: 472, height: 34)
         statusLabel.font = .systemFont(ofSize: 11)
@@ -97,6 +111,21 @@ final class SyncPane: NSViewController {
     override func viewWillAppear() {
         super.viewWillAppear()
         loadExisting()
+        autoBox.state = settings.autoSyncEnabled ? .on : .off
+    }
+
+    @objc private func toggleAuto(_ sender: NSButton) {
+        settings.autoSyncEnabled = sender.state == .on
+    }
+
+    /// Shows when the last pass ran, so automatic sync is visible rather than
+    /// something you have to trust silently.
+    private func lastSyncText() -> String {
+        let (at, summary) = lastSync()
+        guard let at, let summary else { return "" }
+        let ago = Int(Date().timeIntervalSince(at))
+        let when = ago < 60 ? "\(ago)s ago" : "\(ago / 60) min ago"
+        return "  Last sync \(when): \(summary)."
     }
 
     private func loadExisting() {
@@ -116,7 +145,7 @@ final class SyncPane: NSViewController {
         // them again would put them on screen during screen sharing for no gain.
         secretField.placeholderString = "saved, leave blank to keep"
         passphraseField.placeholderString = "saved, leave blank to keep"
-        statusLabel.stringValue = "Configured. Credentials are in your Keychain."
+        statusLabel.stringValue = "Configured. Credentials are in your Keychain." + lastSyncText()
     }
 
     private func currentCredentials() -> (R2Credentials, String)? {
