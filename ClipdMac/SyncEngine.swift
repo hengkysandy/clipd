@@ -26,12 +26,23 @@ final class SyncEngine {
     private let store: SQLiteStore
     private let deviceID: String
     private let key: SymmetricKey
+    /// Everything this engine touches lives under here.
+    ///
+    /// Exists so tests can be given a throwaway namespace. They previously ran
+    /// against the real "items/" and "manifests/" paths and deleted a live
+    /// history from the bucket as cleanup. Nothing was permanently lost because
+    /// each Mac keeps its own copy, but a second device then synced against an
+    /// empty bucket and looked broken. Never point a destructive test at
+    /// production.
+    private let prefix: String
 
-    init(client: R2Client, store: SQLiteStore, deviceID: String, key: SymmetricKey) {
+    init(client: R2Client, store: SQLiteStore, deviceID: String,
+         key: SymmetricKey, prefix: String = "") {
         self.client = client
         self.store = store
         self.deviceID = deviceID
         self.key = key
+        self.prefix = prefix
     }
 
     func runOnce() async throws -> SyncSummary {
@@ -39,7 +50,7 @@ final class SyncEngine {
 
         // Every manifest except our own. Ours describes what we already know.
         var remote: [SyncRecord] = []
-        for manifestKey in try await client.list(prefix: "manifests/")
+        for manifestKey in try await client.list(prefix: prefix + "manifests/")
         where !manifestKey.hasSuffix("\(deviceID).json.enc") {
             guard let sealed = try await client.get(manifestKey) else { continue }
             do {
@@ -60,11 +71,11 @@ final class SyncEngine {
             case .upload(let id):
                 guard let payload = try store.payload(for: id) else { continue }
                 let sealed = try SyncCrypto.seal(payload, with: key)
-                _ = try await client.put("items/\(id.uuidString).enc", sealed)
+                _ = try await client.put(prefix + "items/\(id.uuidString).enc", sealed)
                 uploaded += 1
 
             case .download(let id):
-                guard let sealed = try await client.get("items/\(id.uuidString).enc") else { continue }
+                guard let sealed = try await client.get(prefix + "items/\(id.uuidString).enc") else { continue }
                 try store.apply(payload: try SyncCrypto.open(sealed, with: key))
                 downloaded += 1
 
@@ -80,7 +91,7 @@ final class SyncEngine {
         // Our manifest last, so it only ever claims things we really uploaded.
         let manifest = SyncManifest(deviceID: deviceID, records: try store.allRecords())
         let sealed = try SyncCrypto.seal(try JSONEncoder().encode(manifest), with: key)
-        _ = try await client.put("manifests/\(deviceID).json.enc", sealed)
+        _ = try await client.put(prefix + "manifests/\(deviceID).json.enc", sealed)
 
         return SyncSummary(uploaded: uploaded, downloaded: downloaded, tombstoned: tombstoned)
     }
@@ -90,12 +101,12 @@ final class SyncEngine {
     /// If-None-Match makes the create atomic, so two Macs setting up at the
     /// same moment cannot end up with different salts and therefore different
     /// keys. Measured on R2: the second write returns 412.
-    static func fetchOrCreateSalt(client: R2Client) async throws -> Data {
-        if let existing = try await client.get("salt.bin") { return existing }
+    static func fetchOrCreateSalt(client: R2Client, prefix: String = "") async throws -> Data {
+        if let existing = try await client.get(prefix + "salt.bin") { return existing }
         let fresh = SyncCrypto.randomSalt()
-        let created = try await client.put("salt.bin", fresh, ifAbsent: true)
+        let created = try await client.put(prefix + "salt.bin", fresh, ifAbsent: true)
         if created { return fresh }
-        guard let theirs = try await client.get("salt.bin") else {
+        guard let theirs = try await client.get(prefix + "salt.bin") else {
             throw R2Error.transport("salt vanished after a losing create")
         }
         return theirs

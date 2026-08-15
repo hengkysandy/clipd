@@ -3,6 +3,6 @@ import ClipdCore
 
 final class SmokeTests: XCTestCase {
     func testCoreIsLinkedIntoTheApp() {
-        XCTAssertEqual(ClipdCore.version, "0.1.1")
+        XCTAssertEqual(ClipdCore.version, "0.1.2")
     }
 }
