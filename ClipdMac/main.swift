@@ -52,6 +52,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         watcher.start()
 
         panelController = PanelController(history: history)
+        panelController.onCommit = { item, target in
+            let ok = Paster.paste(item.text, into: target)
+            Diag.paste.info("pasted \(item.text.count, privacy: .public) chars into \(target?.bundleIdentifier ?? "nil", privacy: .public), success \(ok, privacy: .public)")
+        }
         hotKey = HotKey { [weak self] in
             self?.panelController.toggle()
         }
@@ -64,8 +68,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func rebuildMenu() {
         let menu = NSMenu()
+        // The menu bar carries the failure too, not just the panel. Without
+        // Accessibility macOS discards every synthesised event and reports
+        // nothing, so the app would otherwise look completely healthy while
+        // pasting nothing at all.
+        let trusted = AXIsProcessTrusted()
+        statusItem.button?.title = trusted ? "Clipd" : "Clipd (!)"
         let header = NSMenuItem(
-            title: "Clipd \(ClipdCore.version), \(history.items.count) items",
+            title: trusted
+                ? "Clipd \(ClipdCore.version), \(history.items.count) items"
+                : "PASTE DISABLED, Accessibility not granted",
             action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)

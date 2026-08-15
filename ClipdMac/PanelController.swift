@@ -109,7 +109,10 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         // NEVER read panel.isKeyWindow here. Activation is asynchronous and
         // measures false in this same runloop turn, which looks exactly like a
         // hard failure. It becomes true within 10ms.
-        Diag.panel.info("opened, previous app \(self.previousApp?.bundleIdentifier ?? "nil", privacy: .public), \(self.results.count, privacy: .public) results")
+        // Trust state belongs in this line. Without it, an untrusted launch
+        // looks identical to a broken search field: the field is hidden, so
+        // nothing can be typed, and no later diagnostic ever fires.
+        Diag.panel.info("opened, previous app \(self.previousApp?.bundleIdentifier ?? "nil", privacy: .public), \(self.results.count, privacy: .public) results, accessibilityTrusted \(AXIsProcessTrusted(), privacy: .public)")
     }
 
     func dismiss() {
