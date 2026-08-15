@@ -201,15 +201,26 @@ final class CardItem: NSCollectionViewItem {
         self.index = index
         self.boardColors = boardColors
         itemKind = item.kind
+        let kindName: String
         switch item.kind {
-        case .link:  kindLabel.stringValue = "Link"
-        case .image: kindLabel.stringValue = "Image"
+        case .link:  kindName = "Link"
+        case .image: kindName = "Image"
         // "Swift" or "YAML" instead of "Text" when we know. The header is the
         // only place with room to say it, and it doubles as a check on the
         // detector: if a card says JSON over an email, the rules are wrong.
-        case .text:  kindLabel.stringValue = item.codeLanguage?.displayName ?? "Text"
+        case .text:  kindName = item.codeLanguage?.displayName ?? "Text"
         }
-        timeLabel.stringValue = CardItem.age(of: item.createdAt)
+        // A named item leads with its name, because that is what the user chose
+        // to call it. The kind drops down to join the age, so nothing is lost.
+        // Rejected: a third line for the title, which would cost every card
+        // eighteen points of body height to serve the few that are named.
+        if let title = item.title {
+            kindLabel.stringValue = title
+            timeLabel.stringValue = "\(kindName) \u{00B7} \(CardItem.age(of: item.createdAt))"
+        } else {
+            kindLabel.stringValue = kindName
+            timeLabel.stringValue = CardItem.age(of: item.createdAt)
+        }
         iconView.image = AppIconCache.icon(forBundleID: item.sourceBundleID)
         if item.kind == .image, let data = item.imageData {
             // Decoding a 2.8 MB PNG per visible card is fine: only a handful
@@ -230,7 +241,10 @@ final class CardItem: NSCollectionViewItem {
             }
             countLabel.stringValue = "\(item.text.count) characters"
         }
-        indexLabel.stringValue = "\(index + 1)"
+        // The number is a keyboard shortcut, not a position. Only 1 to 9 can be
+        // typed as Cmd+digit, so showing 10 and up would advertise a shortcut
+        // that does not exist.
+        indexLabel.stringValue = index < 9 ? "\(index + 1)" : ""
         rebuildBoardDots()
         applySelection()
     }

@@ -109,6 +109,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let store = self?.store else { return [] }
             return (try? store.search(query, limit: 500)) ?? []
         }
+        // Naming an item writes the row and then reloads the in-memory history,
+        // because the panel reads its cards from there. Rejected: mutating the
+        // cached HistoryItem in place, which would show the new name until the
+        // next launch and then lose it if the write had failed.
+        panelController.onRenameItem = { [weak self] id, title in
+            guard let self, let store else { return }
+            do {
+                try store.setTitle(title, for: id)
+                history.load(try store.loadAll(limit: 500))
+                Diag.panel.info("item renamed, named now \(title != nil, privacy: .public)")
+                rebuildMenu()
+            } catch {
+                Diag.panel.error("rename failed: \(String(describing: error), privacy: .public)")
+            }
+        }
         panelController.onCreateBoard = { [weak self] name in
             try? self?.store?.createPinboard(name: name)
         }

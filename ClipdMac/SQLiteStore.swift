@@ -48,7 +48,8 @@ final class SQLiteStore {
     /// up as items silently disappearing from search only.
     private static let itemColumns = """
         id, kind, created_at, source_bundle, source_name, source_url,
-        content_hash, text_content, preview, px_width, px_height, blob_ref
+        content_hash, text_content, preview, px_width, px_height, blob_ref,
+        title
         """
 
     /// Rows to items. Shared by `loadAll` and `search` on purpose: an item found
@@ -62,6 +63,9 @@ final class SQLiteStore {
             let createdAt = Date(timeIntervalSince1970: Double(created) / 1000)
             let bundle = row["source_bundle"].flatMap { if case .text(let s) = $0 { return s } else { return nil } }
             let name = row["source_name"].flatMap { if case .text(let s) = $0 { return s } else { return nil } }
+            // A row written before migration 3, or an item nobody has named,
+            // has NULL here and comes back as no title at all.
+            let title = row["title"].flatMap { if case .text(let s) = $0 { return s } else { return nil } }
 
             if kind == "image" {
                 guard case .text(let ref)? = row["blob_ref"],
@@ -73,12 +77,36 @@ final class SQLiteStore {
                 return HistoryItem(id: id, imageData: data,
                                    pixelWidth: Int(w), pixelHeight: Int(h),
                                    sourceBundleID: bundle, sourceName: name,
-                                   createdAt: createdAt)
+                                   createdAt: createdAt, title: title)
             }
             guard case .text(let text)? = row["text_content"] else { return nil }
             return HistoryItem(id: id, text: text, sourceBundleID: bundle,
-                               sourceName: name, createdAt: createdAt)
+                               sourceName: name, createdAt: createdAt, title: title)
         }
+    }
+
+    /// Blank means no title, decided in exactly one place.
+    ///
+    /// The rule (trim, empty becomes nil, cap at 200) lives in Core on
+    /// `HistoryItem`, and this reaches it through the public initialiser rather
+    /// than writing a second copy here. Rejected: repeating the three lines in
+    /// this file, because two copies of a normalisation rule drift, and the
+    /// whole point of the rule is that "has a title" has one answer everywhere.
+    ///
+    /// It goes through an initialiser only because `HistoryItem.normalisedTitle`
+    /// is internal to ClipdCore and so cannot be called from this module. Make
+    /// that one declaration public and this helper becomes a single call.
+    private static func normalisedTitle(_ raw: String?) -> String? {
+        HistoryItem.normalisedTitle(raw)
+    }
+
+    /// The name this Mac currently has for a row, or nil if it has none or has
+    /// never seen the row. Used to protect a name from a writer that does not
+    /// know names exist.
+    private func existingTitle(of id: UUID) throws -> String? {
+        let rows = try db.query("SELECT title FROM items WHERE id = ?", [.text(id.uuidString)])
+        guard case .text(let title)? = rows.first?["title"] else { return nil }
+        return title
     }
 
     // MARK: - Search
@@ -94,6 +122,13 @@ final class SQLiteStore {
     /// Newest first, never by relevance. A clipboard history is a timeline, and
     /// ranking buries the thing you copied 30 seconds ago under an older but
     /// better scoring match. This is the same rule `History.search` follows.
+    ///
+    /// Searches titles as well as content, and needed no change to do it. A bare
+    /// FTS5 phrase with no `column:` prefix matches in ANY indexed column, and
+    /// `matchPhrases` never writes such a prefix, so adding `title` to the index
+    /// in migration 3 was the whole of the work. Checked, not assumed: a column
+    /// filter anywhere in this query would have pinned search to content and the
+    /// feature would have failed silently.
     ///
     /// Returns an empty array, and never throws, when the index cannot answer.
     /// See the catch below for why.
@@ -195,8 +230,8 @@ final class SQLiteStore {
               (id, kind, created_at, updated_at, deleted_at, device_id,
                source_bundle, source_name, source_url, content_hash,
                text_content, preview, char_count, px_width, px_height,
-               blob_ref, pinned)
-            VALUES (?,?,?,?,NULL,?,?,?,NULL,?,?,?,?,?,?,?,0)
+               blob_ref, pinned, title)
+            VALUES (?,?,?,?,NULL,?,?,?,NULL,?,?,?,?,?,?,?,0,?)
             """, [
                 .text(item.id.uuidString),
                 .text(item.kind.rawValue),
@@ -212,6 +247,10 @@ final class SQLiteStore {
                 item.pixelWidth.map { SQLValue.int(Int64($0)) } ?? .null,
                 item.pixelHeight.map { SQLValue.int(Int64($0)) } ?? .null,
                 blobRef,
+                // Already normalised: both HistoryItem initialisers run every
+                // title through the same rule, so nothing here can be a blank
+                // string pretending to be a name.
+                item.title.map { SQLValue.text($0) } ?? .null,
             ])
         try reindex(id: item.id)
     }
@@ -255,11 +294,53 @@ final class SQLiteStore {
         try db.run("DELETE FROM items WHERE id = ?", [.text(id.uuidString)])
     }
 
+    /// Puts this row's current values into the search index, replacing whatever
+    /// was there for it.
+    ///
+    /// The DELETE first is not optional. `items_fts` is a standalone FTS5 table
+    /// keyed by rowid, so a bare INSERT for a rowid that is already indexed
+    /// fails on a constraint. Before titles nothing ever reindexed a row that
+    /// was still in place, so the INSERT alone was enough. `setTitle` changes
+    /// that: renaming an item twice hits the same rowid twice. Rejected: an
+    /// UPDATE on items_fts, which FTS5 supports but which would then need a
+    /// separate INSERT path for a row that is not indexed yet.
     private func reindex(id: UUID) throws {
         try db.run("""
-            INSERT INTO items_fts(rowid, text_content, preview)
-            SELECT rowid, text_content, preview FROM items WHERE id = ?
+            DELETE FROM items_fts WHERE rowid IN (SELECT rowid FROM items WHERE id = ?)
             """, [.text(id.uuidString)])
+        // `deleted_at IS NULL` is the same rule migrations 2 and 3 use when they
+        // rebuild the whole index. A tombstone must never be findable, and this
+        // is the one path that could put one back: reindexing now happens on an
+        // existing row, not only on a fresh insert.
+        try db.run("""
+            INSERT INTO items_fts(rowid, text_content, preview, title)
+            SELECT rowid, text_content, preview, title FROM items
+            WHERE id = ? AND deleted_at IS NULL
+            """, [.text(id.uuidString)])
+    }
+
+    /// Names an item, renames it, or clears the name when `title` is nil or blank.
+    ///
+    /// `updated_at` is set to NOW, never to the item's own timestamp. This is the
+    /// same trap `touch(id:at:)` already fell into and documents: sync resolves a
+    /// conflict by last writer wins on `updated_at`, so stamping a change with
+    /// anything other than the moment the change was made means the change can
+    /// lose to a copy of the row the other Mac has been holding untouched. The
+    /// title would then simply never travel, and the user would see the name on
+    /// one Mac only, with sync reporting success the whole time.
+    ///
+    /// `created_at` is deliberately untouched. Naming an item is not copying it,
+    /// so it must not jump to the top of the history.
+    func setTitle(_ title: String?, for id: UUID) throws {
+        let normalised = Self.normalisedTitle(title)
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        try db.run("UPDATE items SET title = ?, updated_at = ? WHERE id = ?",
+                   [normalised.map { SQLValue.text($0) } ?? .null, .int(now),
+                    .text(id.uuidString)])
+        // The index holds its own copy of the title, so it goes stale the
+        // instant the column changes. Without this the item stays findable by
+        // its old name and is not findable by its new one.
+        try reindex(id: id)
     }
 
     /// Retention sweep. A tombstone, not a hard delete, so a v1.1 sync cannot
@@ -464,11 +545,22 @@ final class SQLiteStore {
         let rows = try db.query("""
             SELECT id, kind, created_at, updated_at, deleted_at, device_id,
                    source_bundle, source_name, source_url, content_hash,
-                   text_content, preview, char_count, px_width, px_height, blob_ref
+                   text_content, preview, char_count, px_width, px_height, blob_ref,
+                   title
             FROM items WHERE id = ?
             """, [.text(id.uuidString)])
         guard let row = rows.first else { return nil }
 
+        // The JSON is built from whatever the row returned, so a column travels
+        // as soon as it is SELECTed. The SELECT above is an explicit list, not a
+        // `*`, so a new column does NOT travel on its own: `title` had to be
+        // added by hand. Checked rather than assumed, because a column that
+        // quietly never syncs looks exactly like a working sync.
+        //
+        // A NULL column is skipped, the same as every other nullable column
+        // here. So an item with no name sends no "title" key at all, which is
+        // also what an older Clipd sends. See `apply` for what a receiver does
+        // with that.
         var json: [String: Any] = [:]
         for (name, value) in row {
             switch value {
@@ -477,6 +569,16 @@ final class SQLiteStore {
             case .blob, .null: break
             }
         }
+        // The title key is ALWAYS written, with an explicit null when the item
+        // has no name. Every other nullable column is happy to be absent, but
+        // this one is not, because a receiver has to tell two cases apart:
+        // "the writer has no name for this" and "the writer does not know names
+        // exist". Absent now means only the second. Without this, removing a
+        // name would look identical to a payload from an older Clipd, and the
+        // receiver, which protects names against older writers, would put the
+        // deleted name straight back.
+        json["title"] = (row["title"].flatMap { if case .text(let s) = $0 { return s } else { return nil } })
+            ?? NSNull()
         let meta = try JSONSerialization.data(withJSONObject: json)
 
         var out = Data()
@@ -506,6 +608,26 @@ final class SQLiteStore {
     /// will sit on different app versions for a while. A payload this build cannot
     /// read is an item that silently never arrives, so the older readers stay until
     /// both ends are known to be new.
+    ///
+    /// Known gap, titles across versions. An older Clipd drops the "title" key it
+    /// does not understand, and its own payloads never carry one. A payload with
+    /// no title key therefore means either "written before titles existed" or
+    /// "this item has no name", and the two cannot be told apart, so both land as
+    /// NULL here.
+    ///
+    /// A passive round trip is safe. The older Mac applies our payload and takes
+    /// our `updated_at` with it, so its copy ties rather than wins, and
+    /// `planSync` never asks us to download a row that is not newer than ours.
+    ///
+    /// What is NOT safe is the older Mac making its own change to a named item.
+    /// A repeat copy calls `touch`, which stamps `updated_at` with now. That row
+    /// is genuinely newer, we download it, and its missing title overwrites the
+    /// name the user typed here. The fix is a pair: have the writer always emit
+    /// a "title" key, using an explicit JSON null when there is no name, and have
+    /// this reader keep the local title when the key is absent entirely. Not done
+    /// here because it only closes once both Macs run the new writer, and because
+    /// it changes what an absent key means, which is a decision worth making on
+    /// purpose rather than as part of adding a column.
     func apply(payload: Data) throws {
         let parsed = try Self.split(payload: payload)
         let meta = parsed.meta
@@ -530,24 +652,57 @@ final class SQLiteStore {
             (json[key] as? Int64).map { SQLValue.int($0) }
                 ?? (json[key] as? Int).map { SQLValue.int(Int64($0)) } ?? .null
         }
+        // Normalised on the way in, exactly like a title typed on this Mac.
+        // These bytes came from another machine, so a peer on a build with a
+        // different rule, or a hand written object in the bucket, must not be
+        // able to put a blank or an unbounded string in the column. Reading
+        // normalises too, but only the stored value reaches the search index.
+        //
+        // ABSENT and NULL mean different things here, and the difference is a
+        // name the user typed.
+        //
+        //   key absent  -> the writer knows nothing about titles, so KEEP ours
+        //   key is null -> the writer means "this item has no name", so clear it
+        //
+        // Without that split, an older Mac that merely re-copies an item you had
+        // named sends a payload with no title key, wins on updated_at because
+        // its copy is genuinely newer, and this INSERT OR REPLACE writes NULL
+        // over your name. Silent, no error, and the item itself survives so
+        // nothing looks broken. The writer end of the pair is in `payload(for:)`,
+        // which now always emits the key, using an explicit null for "no name".
+        let incomingTitle: String?
+        if json.index(forKey: "title") == nil {
+            incomingTitle = try existingTitle(of: id)
+        } else {
+            incomingTitle = Self.normalisedTitle(json["title"] as? String)
+        }
         try db.run("""
             INSERT OR REPLACE INTO items
               (id, kind, created_at, updated_at, deleted_at, device_id,
                source_bundle, source_name, source_url, content_hash,
                text_content, preview, char_count, px_width, px_height,
-               blob_ref, pinned)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+               blob_ref, pinned, title)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
             """, [
                 .text(id.uuidString), text("kind"), int("created_at"), int("updated_at"),
                 int("deleted_at"), text("device_id"), text("source_bundle"),
                 text("source_name"), text("source_url"), text("content_hash"),
                 text("text_content"), text("preview"), int("char_count"),
                 int("px_width"), int("px_height"), blobRef,
+                // A payload written by a Clipd from before titles has no "title"
+                // key, so this is NULL and the row applies with no name. That is
+                // the same answer every other missing optional key gets here, and
+                // it is why an old payload needs no special case.
+                //
+                // It also means an older Mac that writes to a named item can send
+                // the item back with the name missing. See the note on this
+                // method for what that costs.
+                incomingTitle.map { SQLValue.text($0) } ?? .null,
             ])
-        try db.run("""
-            INSERT INTO items_fts(rowid, text_content, preview)
-            SELECT rowid, text_content, preview FROM items WHERE id = ?
-            """, [.text(id.uuidString)])
+        // One reindex path for every writer. It also carries the tombstone
+        // guard, which this inline copy did not have: a tombstone payload used
+        // to be indexed and so stayed findable until the next rebuild.
+        try reindex(id: id)
     }
 
     /// Marks an item deleted because the other Mac deleted it.

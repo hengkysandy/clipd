@@ -204,3 +204,79 @@ func loadDoesNotEcho() {
     #expect(inserts == 0)
     #expect(history.items.count == 1)
 }
+
+// MARK: - Item titles
+//
+// The point of naming an item is finding it later by a word that is not in it.
+
+@Test("Search finds an item by a word that is only in its title")
+func searchMatchesTheTitle() {
+    let history = History()
+    history.add(HistoryItem(text: "ALTER TABLE items ADD COLUMN title TEXT",
+                            sourceBundleID: nil, sourceName: nil, createdAt: Date(),
+                            title: "clipd migration three"))
+    #expect(history.search("migration").count == 1)
+    // And the content still matches, so naming an item does not replace what
+    // it is, it adds to it.
+    #expect(history.search("ALTER").count == 1)
+    // A token from the title and a token from the content, together.
+    #expect(history.search("clipd column").count == 1)
+    #expect(history.search("clipd nonsense").isEmpty)
+}
+
+@Test("An untitled item is unaffected by title search")
+func untitledItemsStillSearchable() {
+    let history = History()
+    history.add(HistoryItem(text: "docker compose up", sourceBundleID: nil,
+                            sourceName: nil, createdAt: Date()))
+    #expect(history.search("docker").count == 1)
+    #expect(history.search("compose up").count == 1)
+}
+
+@Test("A blank title is stored as no title at all")
+func blankTitlesBecomeNil() {
+    // Otherwise "has a name" is two questions, nil and empty, and every call
+    // site gets to pick the wrong one.
+    let date = Date()
+    #expect(HistoryItem(text: "x", sourceBundleID: nil, sourceName: nil,
+                        createdAt: date, title: "").title == nil)
+    #expect(HistoryItem(text: "x", sourceBundleID: nil, sourceName: nil,
+                        createdAt: date, title: "   \n\t ").title == nil)
+    #expect(HistoryItem(text: "x", sourceBundleID: nil, sourceName: nil,
+                        createdAt: date, title: nil).title == nil)
+}
+
+@Test("A title is trimmed and bounded")
+func titlesAreTrimmedAndBounded() {
+    let date = Date()
+    #expect(HistoryItem(text: "x", sourceBundleID: nil, sourceName: nil,
+                        createdAt: date, title: "  prod key  ").title == "prod key")
+    // A pasted paragraph in the name field would otherwise be stored forever
+    // and drawn into a header one line tall.
+    let long = String(repeating: "a", count: 500)
+    #expect(HistoryItem(text: "x", sourceBundleID: nil, sourceName: nil,
+                        createdAt: date, title: long).title?.count == 200)
+}
+
+@Test("An image can be named too, and found by that name")
+func imagesCanBeNamed() {
+    let history = History()
+    history.add(HistoryItem(imageData: Data([1, 2, 3]), pixelWidth: 10, pixelHeight: 10,
+                            sourceBundleID: nil, sourceName: nil, createdAt: Date(),
+                            title: "architecture diagram"))
+    #expect(history.search("architecture").count == 1)
+    // The preview still works, so the old way of finding an image is intact.
+    #expect(history.search("image").count == 1)
+}
+
+@Test("A title does not change the content hash, so naming is not a new item")
+func titlesDoNotAffectDedup() {
+    // If the title fed the hash, naming an item would make it stop matching the
+    // copy of the same text on the other Mac, and dedup would keep both.
+    let date = Date()
+    let named = HistoryItem(text: "same text", sourceBundleID: nil, sourceName: nil,
+                            createdAt: date, title: "a name")
+    let plain = HistoryItem(text: "same text", sourceBundleID: nil, sourceName: nil,
+                            createdAt: date)
+    #expect(named.contentHash == plain.contentHash)
+}

@@ -33,17 +33,31 @@ public struct HistoryItem: Identifiable, Equatable, Sendable {
     /// stored value would freeze every old row at whatever the rules were on
     /// the day it was copied.
     public let codeLanguage: CodeLanguage?
+    /// A name the user gave this item, nil when they have not named it.
+    ///
+    /// Stored, unlike `codeLanguage`, because it cannot be derived from
+    /// anything. It is searched alongside the content, so naming an item is a
+    /// way of making it findable by a word that is not in it at all.
+    ///
+    /// Empty and whitespace-only titles are normalised to nil at every entry
+    /// point, so "has a title" is one question with one answer everywhere
+    /// rather than a check for nil in some places and for empty in others.
+    public let title: String?
     public let sourceBundleID: String?
     public let sourceName: String?
     public let createdAt: Date
     public let contentHash: String
 
+    /// What the card shows as its name, and what search matches first.
+    public var displayTitle: String? { title }
+
     // MARK: - Text
 
     public init(id: UUID = UUID(), text: String, sourceBundleID: String?,
-                sourceName: String?, createdAt: Date) {
+                sourceName: String?, createdAt: Date, title: String? = nil) {
         self.id = id
         self.text = text
+        self.title = HistoryItem.normalisedTitle(title)
         self.imageData = nil
         self.pixelWidth = nil
         self.pixelHeight = nil
@@ -62,9 +76,11 @@ public struct HistoryItem: Identifiable, Equatable, Sendable {
     // MARK: - Image
 
     public init(id: UUID = UUID(), imageData: Data, pixelWidth: Int, pixelHeight: Int,
-                sourceBundleID: String?, sourceName: String?, createdAt: Date) {
+                sourceBundleID: String?, sourceName: String?, createdAt: Date,
+                title: String? = nil) {
         self.id = id
         self.text = ""
+        self.title = HistoryItem.normalisedTitle(title)
         self.imageData = imageData
         self.pixelWidth = pixelWidth
         self.pixelHeight = pixelHeight
@@ -80,6 +96,19 @@ public struct HistoryItem: Identifiable, Equatable, Sendable {
         // The preview doubles as the search text for an image, so typing
         // "image" finds them. Otherwise images would be unreachable by search.
         self.preview = "Image \(pixelWidth) x \(pixelHeight)"
+    }
+
+    /// Blank is not a title.
+    ///
+    /// A rename dialog left empty, or filled with spaces, means "no name", not
+    /// a name made of nothing. Normalising here rather than at each call site
+    /// is what lets every other place ask `title == nil` and be right.
+    /// Bounded at 200 characters because the header shows one line, and a
+    /// pasted paragraph in the title field would otherwise be stored forever.
+    public static func normalisedTitle(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        return String(trimmed.prefix(200))
     }
 
     /// A single URL and nothing else reads as a link. Anything with whitespace

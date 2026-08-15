@@ -87,7 +87,10 @@ public final class History {
             // Preview as well as text, so images are reachable. An image has no
             // text at all, and its preview is "Image 2560 x 1664", which makes
             // typing "image" or a dimension find it.
-            let haystack = (item.text + " " + item.preview).lowercased()
+            //
+            // The title too, which is the whole point of naming an item: a name
+            // makes it findable by a word that appears nowhere in the content.
+            let haystack = (item.text + " " + item.preview + " " + (item.title ?? "")).lowercased()
             return tokens.allSatisfy { haystack.contains($0) }
         }
     }

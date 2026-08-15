@@ -7,28 +7,52 @@ private final class ClipdPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
-    /// Cmd+1 to Cmd+9 files the selected card on that board.
+    /// Cmd+1 to Cmd+9 pastes the card wearing that number.
     ///
-    /// Rejected: drag and drop, slower than a keystroke for the case this app
-    /// is for. Rejected: a context menu, which needs the mouse.
-    var onNumberKey: ((Int) -> Bool)?
+    /// The number on the card IS this shortcut, which is why the card stops
+    /// drawing it after 9. Rejected: making Cmd+digit only select, leaving Enter
+    /// to paste. Paste is the reason the panel is open, and every other item in
+    /// the strip is one keystroke away already.
+    var onPasteNumber: ((Int) -> Bool)?
+    /// Ctrl+1 to Ctrl+9 files the selected card on that board.
+    ///
+    /// This was Cmd+digit until Cmd+digit was given to paste. Rejected:
+    /// Option+digit, which types £ and ¢ and similar on a Mac keyboard, so the
+    /// character arriving in the event is no longer a digit at all.
+    var onBoardNumber: ((Int) -> Bool)?
     /// Cmd+Left and Cmd+Right move between boards. Plain arrows already move
     /// between cards, so the modifier is what separates the two axes.
     var onBoardStep: ((Int) -> Bool)?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // Control first. A Control+digit event carries no Command flag, so it
+        // would otherwise fall straight through to the system.
+        if event.modifierFlags.contains(.control),
+           !event.modifierFlags.contains(.command),
+           let digit = digit(in: event), onBoardNumber?(digit) == true {
+            return true
+        }
         guard event.modifierFlags.contains(.command) else {
             return super.performKeyEquivalent(with: event)
         }
-        if let characters = event.charactersIgnoringModifiers,
-           let digit = Int(characters), digit >= 1, digit <= 9,
-           onNumberKey?(digit) == true {
+        if let digit = digit(in: event), onPasteNumber?(digit) == true {
             return true
         }
         // 123 is left arrow, 124 is right arrow.
         if event.keyCode == 123, onBoardStep?(-1) == true { return true }
         if event.keyCode == 124, onBoardStep?(1) == true { return true }
         return super.performKeyEquivalent(with: event)
+    }
+
+    /// 1 to 9 from a key event, or nil.
+    ///
+    /// `charactersIgnoringModifiers` rather than `characters`, because with
+    /// Control held the latter can be a control code rather than the digit.
+    /// Zero is excluded: there is no card zero.
+    private func digit(in event: NSEvent) -> Int? {
+        guard let characters = event.charactersIgnoringModifiers,
+              let value = Int(characters), (1...9).contains(value) else { return nil }
+        return value
     }
 }
 
@@ -119,6 +143,9 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     var onDeleteBoard: ((UUID) -> Void)?
     var onRenameBoard: ((UUID, String) -> Void)?
     var onToggleMembership: ((UUID, UUID) -> Void)?
+
+    /// Sets or clears one item's name. Nil means remove it.
+    var onRenameItem: ((UUID, String?) -> Void)?
 
     /// Full text search across the whole stored history, not just what the panel
     /// holds in memory. Nil until the app wires it, and nil is safe: the panel
@@ -301,7 +328,17 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         // Click anywhere outside and the panel goes away. Losing key status is
         // the signal: it covers clicking another app, clicking the desktop and
         // switching apps with Cmd+Tab, which a click monitor would not.
-        panel.onNumberKey = { [weak self] digit in
+        panel.onPasteNumber = { [weak self] digit in
+            // Only what is on screen. The card numbers stop at 9 and so does
+            // this, so the shortcut can never reach a card the user cannot see.
+            guard let self, digit <= self.results.count else { return false }
+            self.selection = digit - 1
+            self.applySelection(scroll: true)
+            self.commitSelection()
+            return true
+        }
+
+        panel.onBoardNumber = { [weak self] digit in
             guard let self, digit <= self.boards.count,
                   self.selection >= 0, self.selection < self.results.count else { return false }
             let board = self.boards[digit - 1]
@@ -683,6 +720,21 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         copy.target = self
         menu.addItem(copy)
 
+        // Naming an item is how you find it later by a word that is not in it.
+        // The title is searched with the content, so "aws prod key rotation" can
+        // find a command that says none of those things.
+        let rename = NSMenuItem(title: item.title == nil ? "Name Item..." : "Rename...",
+                                action: #selector(menuRenameItem), keyEquivalent: "")
+        rename.target = self
+        menu.addItem(rename)
+
+        if item.title != nil {
+            let clear = NSMenuItem(title: "Remove Name",
+                                   action: #selector(menuClearItemTitle), keyEquivalent: "")
+            clear.target = self
+            menu.addItem(clear)
+        }
+
         menu.addItem(.separator())
 
         // Pin, with a tick against every board this item is already on, so the
@@ -697,9 +749,11 @@ final class PanelController: NSObject, NSTextFieldDelegate,
             entry.representedObject = board.id.uuidString
             entry.state = (membership[board.id] ?? []).contains(item.id) ? .on : .off
             // Show the shortcut that already exists, so the menu teaches it.
+            // Control, not Command: Cmd+digit pastes the card wearing that
+            // number now, so pinning moved one modifier across.
             if offset < 9 {
                 entry.keyEquivalent = "\(offset + 1)"
-                entry.keyEquivalentModifierMask = .command
+                entry.keyEquivalentModifierMask = .control
             }
             boardMenu.addItem(entry)
         }
@@ -755,6 +809,54 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     @objc private func menuDelete() { deleteSelected() }
 
     @objc private func menuCreateBoard() { promptForNewBoard() }
+
+    @objc private func menuRenameItem() {
+        guard selection >= 0, selection < results.count else { return }
+        promptToRenameItem(results[selection])
+    }
+
+    @objc private func menuClearItemTitle() {
+        guard selection >= 0, selection < results.count else { return }
+        applyTitle(nil, to: results[selection].id)
+    }
+
+    /// Asks for a name for one item.
+    ///
+    /// The same modal shape as the pinboard prompts, including the
+    /// `isPresentingModal` flag. That flag is not optional here: without it the
+    /// alert takes key focus, the panel's resign-key handler fires, the panel
+    /// closes underneath, and the name being typed goes to whatever app was
+    /// behind it. That was measured, not imagined.
+    private func promptToRenameItem(_ item: HistoryItem) {
+        let alert = NSAlert()
+        alert.messageText = item.title == nil ? "Name this item" : "Rename this item"
+        // The preview, not the content, and short. This dialog can be on screen
+        // over a shared window, and the whole point of the app is that it holds
+        // things you would not want enlarged on a projector.
+        alert.informativeText = String(item.preview.prefix(60))
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        input.placeholderString = "Staging database password reset"
+        input.stringValue = item.title ?? ""
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = input
+        isPresentingModal = true
+        let response = alert.runModal()
+        isPresentingModal = false
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(field)
+        guard response == .alertFirstButtonReturn else { return }
+        // An emptied field means "remove the name", which is the same operation
+        // as Remove Name. Rejected: treating empty as cancel, which would leave
+        // no way to undo a name from the keyboard.
+        applyTitle(input.stringValue, to: item.id)
+    }
+
+    private func applyTitle(_ title: String?, to id: UUID) {
+        onRenameItem?(id, title)
+        reload()
+    }
 
     @objc private func menuTogglePin(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,

@@ -512,4 +512,462 @@ final class SQLiteStoreTests: XCTestCase {
         try store.apply(payload: slice)
         XCTAssertEqual(try store.loadAll(limit: 100).map(\.text), ["sliced, not copied"])
     }
+
+    // MARK: - Titles
+
+    private func title(of id: UUID) throws -> String? {
+        try store.loadAll(limit: 100).first { $0.id == id }?.title
+    }
+
+    func testAnItemStartsWithNoTitle() throws {
+        let item = text("unnamed")
+        try store.insert(item)
+        XCTAssertNil(try title(of: item.id))
+    }
+
+    func testSettingATitleStoresIt() throws {
+        let item = text("kubectl get pods -A")
+        try store.insert(item)
+        try store.setTitle("prod cluster check", for: item.id)
+        XCTAssertEqual(try title(of: item.id), "prod cluster check")
+    }
+
+    func testATitleCanBeChanged() throws {
+        let item = text("kubectl get pods -A")
+        try store.insert(item)
+        try store.setTitle("first name", for: item.id)
+        try store.setTitle("second name", for: item.id)
+        XCTAssertEqual(try title(of: item.id), "second name")
+    }
+
+    func testATitleCanBeCleared() throws {
+        let item = text("kubectl get pods -A")
+        try store.insert(item)
+        try store.setTitle("temporary", for: item.id)
+        try store.setTitle(nil, for: item.id)
+        XCTAssertNil(try title(of: item.id))
+    }
+
+    func testABlankTitleIsNoTitleAtAll() throws {
+        let item = text("kubectl get pods -A")
+        try store.insert(item)
+        // A rename dialog left empty, or filled with spaces, means "no name".
+        // Storing "   " would make every later check ask two questions instead
+        // of one, and would put an empty term in the search index.
+        for blank in ["", "   ", "\n", "\t \n "] {
+            try store.setTitle(blank, for: item.id)
+            XCTAssertNil(try title(of: item.id), "a blank title was stored as a name")
+            let rows = try db.query("SELECT title FROM items WHERE id = ?",
+                                    [.text(item.id.uuidString)])
+            XCTAssertEqual(rows[0]["title"], .null, "a blank title reached the column")
+        }
+    }
+
+    func testATitleIsTrimmedAndBounded() throws {
+        let item = text("kubectl get pods -A")
+        try store.insert(item)
+        try store.setTitle("  padded  ", for: item.id)
+        XCTAssertEqual(try title(of: item.id), "padded")
+        // The card header shows one line. A pasted paragraph in the title field
+        // must not be stored forever.
+        try store.setTitle(String(repeating: "x", count: 500), for: item.id)
+        XCTAssertEqual(try title(of: item.id)?.count, 200)
+    }
+
+    func testATitleGivenAtInsertTimeIsStored() throws {
+        let item = HistoryItem(text: "some payload", sourceBundleID: nil, sourceName: nil,
+                               createdAt: Date(), title: "named on the way in")
+        try store.insert(item)
+        XCTAssertEqual(try title(of: item.id), "named on the way in")
+    }
+
+    func testATitleSurvivesReopeningTheDatabase() throws {
+        let item = text("persisted with a name")
+        try store.insert(item)
+        try store.setTitle("the name", for: item.id)
+        db.close()
+
+        let reopened = try Database(path: dbPath, key: "test-key")
+        let blobs = BlobStore(directory: blobDir,
+                              key: BlobStore.symmetricKey(fromHex: String(repeating: "ab", count: 32)))
+        let store2 = SQLiteStore(database: reopened, blobs: blobs, deviceID: "test-device")
+        XCTAssertEqual(try store2.loadAll(limit: 100).first?.title, "the name")
+        reopened.close()
+    }
+
+    func testAnImageCanBeNamed() throws {
+        let item = HistoryItem(imageData: Data(repeating: 0x9, count: 512),
+                               pixelWidth: 100, pixelHeight: 50,
+                               sourceBundleID: nil, sourceName: nil, createdAt: Date())
+        try store.insert(item)
+        try store.setTitle("the architecture sketch", for: item.id)
+        // An image has no text at all, so a name is the only way to find one on
+        // purpose rather than by scrolling.
+        XCTAssertEqual(try title(of: item.id), "the architecture sketch")
+        XCTAssertEqual(try store.search("sketch", limit: 100).map(\.id), [item.id])
+    }
+
+    // MARK: - Titles and sync timing
+
+    func testSettingATitleBumpsUpdatedAtToNow() throws {
+        let old = Date(timeIntervalSince1970: 1000)
+        let item = HistoryItem(text: "copied long ago", sourceBundleID: nil,
+                               sourceName: nil, createdAt: old)
+        try store.insert(item)
+
+        let before = Int64(Date().timeIntervalSince1970 * 1000)
+        try store.setTitle("named just now", for: item.id)
+        let after = Int64(Date().timeIntervalSince1970 * 1000)
+
+        let rows = try db.query("SELECT created_at, updated_at FROM items WHERE id = ?",
+                                [.text(item.id.uuidString)])
+        guard case .int(let updated)? = rows[0]["updated_at"] else {
+            return XCTFail("updated_at is missing")
+        }
+        // This project already shipped this bug once, in dedup. Sync resolves a
+        // conflict by last writer wins on updated_at, so a change stamped with
+        // anything older than now can lose to a row the other Mac has been
+        // holding untouched, and the name never travels.
+        XCTAssertGreaterThanOrEqual(updated, before)
+        XCTAssertLessThanOrEqual(updated, after)
+        // Naming an item is not copying it, so it must not jump to the top.
+        XCTAssertEqual(rows[0]["created_at"], .int(Int64(old.timeIntervalSince1970 * 1000)))
+    }
+
+    func testANamedItemKeepsItsPlaceInTheTimeline() throws {
+        let older = HistoryItem(text: "older", sourceBundleID: nil, sourceName: nil,
+                                createdAt: Date(timeIntervalSince1970: 1000))
+        let newer = HistoryItem(text: "newer", sourceBundleID: nil, sourceName: nil,
+                                createdAt: Date(timeIntervalSince1970: 2000))
+        try store.insert(older)
+        try store.insert(newer)
+        try store.setTitle("still older", for: older.id)
+        XCTAssertEqual(try store.loadAll(limit: 100).map(\.text), ["newer", "older"])
+    }
+
+    // MARK: - Titles and search
+
+    func testSearchFindsAnItemByAWordOnlyInItsTitle() throws {
+        let item = text("arn:aws:ecs:ap-southeast-3:111:cluster/x")
+        try store.insert(item)
+        try store.setTitle("staging cluster", for: item.id)
+        // The whole point of the feature. "staging" appears nowhere in the
+        // content, so before titles this item could only be found by pieces of
+        // an ARN the user would have to remember.
+        let found = try store.search("staging", limit: 100)
+        XCTAssertEqual(found.map(\.id), [item.id])
+        XCTAssertEqual(found.first?.title, "staging cluster")
+    }
+
+    func testSearchStillFindsANamedItemByItsContent() throws {
+        let item = text("docker compose up")
+        try store.insert(item)
+        try store.setTitle("local stack", for: item.id)
+        // Naming an item must ADD a way to find it, never replace the one that
+        // was already there.
+        XCTAssertEqual(try store.search("compose", limit: 100).map(\.id), [item.id])
+        XCTAssertEqual(try store.search("stack", limit: 100).map(\.id), [item.id])
+        // Both tokens still AND together, one from each side.
+        XCTAssertEqual(try store.search("compose stack", limit: 100).map(\.id), [item.id])
+    }
+
+    func testSearchMatchesATitlePrefix() throws {
+        let item = text("some opaque payload")
+        try store.insert(item)
+        try store.setTitle("deployment notes", for: item.id)
+        // Typing three letters has to work on a title exactly as it does on
+        // content, or search feels broken until the last character.
+        XCTAssertEqual(try store.search("dep", limit: 100).map(\.id), [item.id])
+    }
+
+    func testRenamingReplacesTheOldNameInSearch() throws {
+        let item = text("some opaque payload")
+        try store.insert(item)
+        try store.setTitle("alpha", for: item.id)
+        XCTAssertEqual(try store.search("alpha", limit: 100).count, 1)
+
+        try store.setTitle("bravo", for: item.id)
+        // The index holds its own copy of the title, so a rename that did not
+        // refresh it would leave the item findable by a name the user deleted.
+        XCTAssertEqual(try store.search("bravo", limit: 100).map(\.id), [item.id])
+        XCTAssertTrue(try store.search("alpha", limit: 100).isEmpty,
+                      "the old name still matches, so the index went stale")
+        // Renaming twice hits the same rowid twice, which is what makes the
+        // delete before the reindex necessary.
+        XCTAssertEqual(try store.loadAll(limit: 100).count, 1)
+    }
+
+    func testClearingATitleRemovesItFromSearch() throws {
+        let item = text("some opaque payload")
+        try store.insert(item)
+        try store.setTitle("temporary name", for: item.id)
+        try store.setTitle(nil, for: item.id)
+        XCTAssertTrue(try store.search("temporary", limit: 100).isEmpty)
+        // The content is still indexed, so the item itself is not lost.
+        XCTAssertEqual(try store.search("opaque", limit: 100).map(\.id), [item.id])
+    }
+
+    func testSearchNeverReturnsATombstonedItemByItsTitle() throws {
+        let item = text("secret token abcdef")
+        try store.insert(item)
+        try store.setTitle("the aws root key", for: item.id)
+        try store.softDelete(id: item.id, at: Date())
+        // A deleted item reappearing in search would be the worst kind of bug
+        // this app could have, and a title is a second way for it to happen.
+        XCTAssertTrue(try store.search("root", limit: 100).isEmpty)
+        XCTAssertTrue(try store.search("secret", limit: 100).isEmpty)
+    }
+
+    func testATitleWithFTS5SyntaxInItIsTreatedAsPlainText() throws {
+        let item = text("some opaque payload")
+        try store.insert(item)
+        try store.setTitle("a AND b OR \"c\"", for: item.id)
+        // A title is user typed text and reaches the index the same way content
+        // does, so the same quoting rules have to hold on the query side.
+        XCTAssertNoThrow(try store.search("AND", limit: 100))
+        XCTAssertEqual(try store.search("\"c\"", limit: 100).map(\.id), [item.id])
+    }
+
+    // MARK: - Titles and sync payloads
+
+    func testATitleSurvivesAPayloadRoundTrip() throws {
+        let item = text("arn:aws:s3:::example-bucket")
+        try store.insert(item)
+        try store.setTitle("the bucket arn", for: item.id)
+
+        let payload = try XCTUnwrap(store.payload(for: item.id))
+        // `payload(for:)` selects an explicit column list, not `*`, so a new
+        // column does not travel on its own. This is the check that the list
+        // was actually updated.
+        // v1 framing: a 4 byte length, then the JSON, and a text item carries no
+        // image bytes after it. Copied out of the slice, because a Data slice
+        // keeps its parent's indices.
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(payload.dropFirst(4))) as? [String: Any])
+        XCTAssertEqual(json["title"] as? String, "the bucket arn")
+
+        try store.eraseAll()
+        try store.apply(payload: payload)
+
+        let loaded = try store.loadAll(limit: 100)
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded[0].title, "the bucket arn")
+        // And the name is searchable on the far Mac, not just stored there.
+        XCTAssertEqual(try store.search("bucket arn", limit: 100).map(\.id), [item.id])
+    }
+
+    func testAPayloadWithNoTitleKeyAppliesCleanly() throws {
+        let id = UUID()
+        // Exactly what a Clipd from before titles writes: the key is not there
+        // at all. It must apply as a normal item with no name, not throw and not
+        // store an empty string.
+        try store.apply(payload: try v1Payload(syncJSON(id: id, kind: "text", text: "from an old mac")))
+
+        let loaded = try store.loadAll(limit: 100)
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded[0].id, id)
+        XCTAssertNil(loaded[0].title)
+        XCTAssertEqual(try store.search("old", limit: 100).map(\.id), [id])
+    }
+
+    func testAPayloadCarryingATitleFromAnotherMacApplies() throws {
+        let id = UUID()
+        var json = syncJSON(id: id, kind: "text", text: "kubectl get pods -A")
+        json["title"] = "prod cluster check"
+        try store.apply(payload: try v1Payload(json))
+
+        XCTAssertEqual(try store.loadAll(limit: 100).first?.title, "prod cluster check")
+        // The far Mac's name has to be indexed here too, or the item is named
+        // on one Mac and findable on the other only by its content.
+        XCTAssertEqual(try store.search("prod", limit: 100).map(\.id), [id])
+    }
+
+    func testABlankTitleInAPayloadArrivesAsNoTitle() throws {
+        let id = UUID()
+        var json = syncJSON(id: id, kind: "text", text: "from another mac")
+        json["title"] = "   "
+        // "Blank means no name" is an invariant of the whole app, and a payload
+        // is the one door into the column that is not this Mac's own code.
+        try store.apply(payload: try v1Payload(json))
+        XCTAssertNil(try title(of: id))
+        let rows = try db.query("SELECT title FROM items WHERE id = ?", [.text(id.uuidString)])
+        XCTAssertEqual(rows[0]["title"], .null)
+    }
+
+    /// A known gap, written down as a test rather than left as a surprise.
+    ///
+    /// An older Clipd drops a title key it does not understand, and its own
+    /// payloads never carry one. So when the older Mac makes its OWN change to a
+    /// named item, a repeat copy for example, its row is genuinely newer, this
+    /// Mac downloads it, and the missing key overwrites the name.
+    ///
+    /// This test is expected to FAIL, and to be rewritten, on the day the writer
+    /// starts sending an explicit null for "no name" and this reader starts
+    /// keeping the local title when the key is absent entirely. Same shape as
+    /// the payload version flag test above: the behaviour is deliberate today
+    /// and the test says so out loud.
+    /// An older Mac must not be able to delete a name it cannot see.
+    ///
+    /// This is the case that makes the absent/null distinction worth having.
+    /// Re-copying an item on the 0.3.0 Mac stamps a newer updated_at, so its
+    /// payload legitimately wins, and its payload has no title key at all. If
+    /// absent meant "no name", the name typed on this Mac would be written over
+    /// with NULL. No error, and the item itself survives, so nothing looks
+    /// broken until you go looking for the name.
+    func testAnOlderMacWritingToANamedItemCannotEraseTheName() throws {
+        let item = text("kubectl get pods -A")
+        try store.insert(item)
+        try store.setTitle("prod cluster check", for: item.id)
+
+        // The older Mac's payload for the same row: everything it knows, which
+        // does not include a title, stamped with a later updated_at because it
+        // touched the row itself.
+        var json = syncJSON(id: item.id, kind: "text", text: item.text)
+        json["updated_at"] = Int(Date().timeIntervalSince1970 * 1000) + 60_000
+        XCTAssertNil(json["title"], "the payload under test must not carry a title key")
+        try store.apply(payload: try v1Payload(json))
+
+        XCTAssertEqual(try title(of: item.id), "prod cluster check")
+        XCTAssertEqual(try store.search("prod", limit: 100).map(\.id), [item.id])
+        XCTAssertEqual(try store.search("kubectl", limit: 100).map(\.id), [item.id])
+    }
+
+    /// Removing a name still has to travel, which is why absent and null differ.
+    ///
+    /// A current Clipd writes the key with an explicit null when an item has no
+    /// name. If it were absent instead, the receiver would protect the old name
+    /// and a removal would silently come back.
+    func testRemovingANameTravelsRatherThanBeingProtected() throws {
+        let item = text("terraform destroy")
+        try store.insert(item)
+        try store.setTitle("do not run this", for: item.id)
+
+        // The peer removed the name and sent its row.
+        var json = syncJSON(id: item.id, kind: "text", text: item.text)
+        json["title"] = NSNull()
+        json["updated_at"] = Int(Date().timeIntervalSince1970 * 1000) + 60_000
+        try store.apply(payload: try v1Payload(json))
+
+        XCTAssertNil(try title(of: item.id))
+        XCTAssertTrue(try store.search("do not run", limit: 100).isEmpty)
+        XCTAssertEqual(try store.search("terraform", limit: 100).map(\.id), [item.id])
+    }
+
+    /// The writer half of the pair: a nameless item says so out loud.
+    func testAPayloadAlwaysCarriesTheTitleKeyEvenWhenThereIsNoName() throws {
+        let item = text("no name here")
+        try store.insert(item)
+        let payload = try XCTUnwrap(store.payload(for: item.id))
+
+        // v1 framing: 4 byte length, then the JSON.
+        let length = Int(payload[0 ..< 4].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
+        let meta = payload.subdata(in: 4 ..< (4 + length))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: meta) as? [String: Any])
+
+        XCTAssertTrue(json.keys.contains("title"), "absent would be read as an older writer")
+        XCTAssertTrue(json["title"] is NSNull)
+    }
+
+    // MARK: - Migration 3 on a database that already holds history
+
+    /// Builds a database at the schema it had before titles: migrations 1 and 2
+    /// applied, user_version pinned to 2, nothing else.
+    private func makeVersion2Database(at path: String) throws -> Database {
+        let database = try Database(path: path, key: "test-key")
+        for migration in Schema.migrations where migration.version <= 2 {
+            for statement in migration.statements {
+                try database.execute(statement)
+            }
+        }
+        try database.execute("PRAGMA user_version = 2")
+        return database
+    }
+
+    func testMigratingAPopulatedDatabaseAddsTheColumnAndKeepsEverythingSearchable() throws {
+        let path = NSTemporaryDirectory() + "clipd-migrate-\(UUID().uuidString).sqlite"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let old = try makeVersion2Database(at: path)
+
+        // Two live rows and one tombstone, written the way version 2 wrote them.
+        let live = UUID(), alsoLive = UUID(), gone = UUID()
+        for (id, content, deleted) in [(live, "terraform apply", false),
+                                       (alsoLive, "docker compose up", false),
+                                       (gone, "already deleted", true)] {
+            try old.run("""
+                INSERT INTO items
+                  (id, kind, created_at, updated_at, deleted_at, device_id,
+                   content_hash, text_content, preview, char_count, pinned)
+                VALUES (?,'text',1000,1000,?,'old-mac',?,?,?,?,0)
+                """, [.text(id.uuidString), deleted ? .int(1000) : .null,
+                      .text("hash-\(id.uuidString)"), .text(content), .text(content),
+                      .int(Int64(content.count))])
+        }
+        try old.execute("""
+            INSERT INTO items_fts(rowid, text_content, preview)
+            SELECT rowid, text_content, preview FROM items WHERE deleted_at IS NULL
+            """)
+        XCTAssertEqual(old.userVersion, 2)
+
+        try old.migrate()
+        XCTAssertEqual(old.userVersion, Schema.latestVersion)
+
+        // The column is there.
+        let itemColumns = try old.query("PRAGMA table_info(items)", []).compactMap { row -> String? in
+            if case .text(let name)? = row["name"] { return name } else { return nil }
+        }
+        XCTAssertTrue(itemColumns.contains("title"), "items has no title column after migrating")
+
+        // And the rebuilt index has all three columns, which ALTER could never
+        // have given it.
+        let ftsColumns = try old.query("PRAGMA table_info(items_fts)", []).compactMap { row -> String? in
+            if case .text(let name)? = row["name"] { return name } else { return nil }
+        }
+        XCTAssertEqual(ftsColumns, ["text_content", "preview", "title"])
+
+        // The rows the user already had are still findable. An index that came
+        // out of the rebuild empty would make months of history silently
+        // unreachable, with nothing on screen to say so.
+        let blobs = BlobStore(directory: blobDir,
+                              key: BlobStore.symmetricKey(fromHex: String(repeating: "ab", count: 32)))
+        let migrated = SQLiteStore(database: old, blobs: blobs, deviceID: "test-device")
+        XCTAssertEqual(try migrated.search("terraform", limit: 100).map(\.id), [live])
+        XCTAssertEqual(try migrated.search("compose", limit: 100).map(\.id), [alsoLive])
+        XCTAssertEqual(try migrated.loadAll(limit: 100).count, 2)
+        // The tombstone stayed out of the rebuilt index and out of the list.
+        XCTAssertTrue(try migrated.search("deleted", limit: 100).isEmpty)
+
+        // An existing row has no name, and can be given one straight away.
+        XCTAssertNil(try migrated.loadAll(limit: 100).first { $0.id == live }?.title)
+        try migrated.setTitle("the deploy command", for: live)
+        XCTAssertEqual(try migrated.search("deploy", limit: 100).map(\.id), [live])
+
+        old.close()
+    }
+
+    func testMigratingRunsOnlyOnceEvenIfTheAppReopens() throws {
+        let path = NSTemporaryDirectory() + "clipd-migrate-\(UUID().uuidString).sqlite"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let database = try makeVersion2Database(at: path)
+        try database.run("""
+            INSERT INTO items
+              (id, kind, created_at, updated_at, device_id, content_hash,
+               text_content, preview, char_count, pinned)
+            VALUES (?,'text',1000,1000,'old-mac','h','kubectl get pods','kubectl get pods',16,0)
+            """, [.text(UUID().uuidString)])
+        try database.migrate()
+
+        let blobs = BlobStore(directory: blobDir,
+                              key: BlobStore.symmetricKey(fromHex: String(repeating: "ab", count: 32)))
+        let migrated = SQLiteStore(database: database, blobs: blobs, deviceID: "test-device")
+        let id = try XCTUnwrap(migrated.loadAll(limit: 10).first?.id)
+        try migrated.setTitle("named after migrating", for: id)
+
+        // A second call must be a no-op. If it ran migration 3 again it would
+        // drop the index and rebuild it from `items`, which is harmless for
+        // content but would be a silent full rebuild on every launch.
+        try database.migrate()
+        XCTAssertEqual(try migrated.search("named", limit: 100).map(\.id), [id])
+        XCTAssertEqual(try migrated.search("kubectl", limit: 100).map(\.id), [id])
+        database.close()
+    }
 }

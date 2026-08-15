@@ -103,6 +103,44 @@ public enum Schema {
             SELECT rowid, text_content, preview FROM items WHERE deleted_at IS NULL
             """,
         ]),
+
+        Migration(version: 3, statements: [
+            // A name the user gives an item. Nullable, because almost no item
+            // has one. Rejected: NOT NULL with an empty string default, which
+            // would make "has a title" two questions instead of one and would
+            // put an empty term in the search index for every row.
+            "ALTER TABLE items ADD COLUMN title TEXT",
+
+            // The index has to be dropped and rebuilt, not altered.
+            //
+            // FTS5 has no ALTER TABLE ADD COLUMN. The column list is baked into
+            // the table at creation, so the only way to index a new column is to
+            // create the table again. Rejected: a second FTS table holding only
+            // titles, which would mean two MATCH queries per keystroke and a
+            // union that has to preserve the newest-first order by hand.
+            //
+            // This is the same shape migration 2 already uses, on purpose. That
+            // one had to rebuild anyway, and repeating its exact steps means
+            // there is one rebuild pattern in this file rather than two.
+            "DROP TABLE IF EXISTS items_fts",
+            "CREATE VIRTUAL TABLE items_fts USING fts5(text_content, preview, title)",
+            // Repopulates from `items`, which is the only source of truth, so a
+            // database that already holds months of real history on two Macs
+            // comes out of this fully searchable rather than empty.
+            //
+            // `deleted_at IS NULL` matches migration 2. Tombstoned rows are kept
+            // in `items` so a sync cannot resurrect them, but they must never be
+            // findable, and `search` relies on the index leaving them out as
+            // well as on its own WHERE clause.
+            //
+            // `title` is NULL for every existing row at this point, and FTS5
+            // takes a NULL column value as an empty one, so this line is correct
+            // on the very first run and stays correct on a rebuild later.
+            """
+            INSERT INTO items_fts(rowid, text_content, preview, title)
+            SELECT rowid, text_content, preview, title FROM items WHERE deleted_at IS NULL
+            """,
+        ]),
     ]
 
     public static var latestVersion: Int {
