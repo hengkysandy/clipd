@@ -5,6 +5,8 @@ import ClipdCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var watcher: PasteboardWatcher!
+    private var hotKey: HotKey?
+    private var panelController: PanelController!
     let history = History()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -48,6 +50,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             })
         watcher.start()
+
+        panelController = PanelController(history: history)
+        hotKey = HotKey { [weak self] in
+            self?.panelController.toggle()
+        }
+        if hotKey == nil {
+            // Measured: two apps CAN both register the same hotkey and both
+            // fire, so this is not the only way coexistence goes wrong.
+            Diag.panel.error("Cmd+Shift+V is already taken. If the real Paste app is running, quit it.")
+        }
     }
 
     private func rebuildMenu() {
