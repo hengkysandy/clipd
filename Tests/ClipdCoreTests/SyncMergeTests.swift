@@ -141,3 +141,54 @@ func manifestBackwardCompatible() {
     #expect(manifest?.deviceID == "A")
     #expect(manifest?.boards.isEmpty == true)
 }
+
+// MARK: - Ties where one side is a tombstone
+//
+// These come from a two device test that failed against a real bucket. Dedup
+// stamped its tombstone with the duplicate's own timestamp, which tied exactly
+// with the live row on the other Mac. The tie fell through to the device id
+// rule, which can only answer "nothing" or "download", so the deletion was
+// dropped and the two Macs disagreed forever.
+
+@Test("A tombstone that ties on time still deletes, whichever device holds it")
+func aTiedTombstoneWins() {
+    let id = UUID()
+    // We hold the delete, they still hold the live row.
+    #expect(planSync(local: [rec(id, 10, deleted: 10, device: "A")],
+                     remote: [rec(id, 10, device: "B")]) == [.upload(id)])
+    // They hold the delete, we still hold the live row.
+    #expect(planSync(local: [rec(id, 10, device: "B")],
+                     remote: [rec(id, 10, deleted: 10, device: "A")]) == [.applyTombstone(id)])
+}
+
+@Test("The tied tombstone rule converges: both devices reach deleted")
+func aTiedTombstoneConverges() {
+    // Whichever way round the pair is read, one side uploads the delete and the
+    // other applies it. A rule that told both sides to do nothing would leave
+    // them permanently disagreeing, which is what happened.
+    let id = UUID()
+    let deletedRecord = rec(id, 10, deleted: 10, device: "A")
+    let liveRecord = rec(id, 10, device: "B")
+    let onA = planSync(local: [deletedRecord], remote: [liveRecord])
+    let onB = planSync(local: [liveRecord], remote: [deletedRecord])
+    #expect(onA == [.upload(id)])
+    #expect(onB == [.applyTombstone(id)])
+}
+
+@Test("Two tombstones that tie need no work")
+func twoTiedTombstonesDoNothing() {
+    let id = UUID()
+    #expect(planSync(local: [rec(id, 10, deleted: 10, device: "A")],
+                     remote: [rec(id, 10, deleted: 10, device: "B")]) == [.nothing(id)])
+}
+
+@Test("A tie between two live rows still breaks on device id")
+func liveTiesAreUnchanged() {
+    // The tombstone rule must not disturb the ordinary tie, which exists so two
+    // Macs do not upload over each other on every pass.
+    let id = UUID()
+    #expect(planSync(local: [rec(id, 10, device: "B")],
+                     remote: [rec(id, 10, device: "A")]) == [.nothing(id)])
+    #expect(planSync(local: [rec(id, 10, device: "A")],
+                     remote: [rec(id, 10, device: "B")]) == [.download(id)])
+}

@@ -9,9 +9,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// rebuildMenu() through the dedup and retention sweeps. A force unwrap
     /// crashed the app on launch whenever either found work to do.
     private var statusItem: NSStatusItem?
-    private var watcher: PasteboardWatcher!
+
+    /// Built on first use, which is still inside applicationDidFinishLaunching.
+    ///
+    /// lazy, not a force unwrapped var. The compiler now proves the property is
+    /// never nil, so no call site can ever crash on a watcher that does not
+    /// exist yet. That is the same trap the status item fell into.
+    ///
+    /// Rejected: a plain optional plus guard let at every use. A nil watcher
+    /// would mean capture never started, and turning that into a quiet early
+    /// return hides a total failure of the app's one job.
+    ///
+    /// Rejected: a let assigned in init. Both callbacks capture self, and self
+    /// is not available before super.init() returns, so a let cannot be formed
+    /// there.
+    private lazy var watcher: PasteboardWatcher = makeWatcher()
+
     private var hotKey: HotKey?
-    private var panelController: PanelController!
+
+    /// Same shape as the watcher, for the same reason: never nil, never force
+    /// unwrapped.
+    ///
+    /// Rejected: a let assigned in init. PanelController builds its NSPanel and
+    /// reads NSScreen inside its own initialiser, and our init runs before the
+    /// activation policy is set and before the run loop starts. lazy keeps that
+    /// window build at exactly the point in launch where it happens today.
+    private lazy var panelController: PanelController = PanelController(history: history)
     let history = History()
     private var pause = PauseState.running
     private var pauseTicker: Timer?
@@ -32,10 +55,89 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The status item first. openStore() runs the dedup and retention
         // sweeps, both of which rebuild the menu, so it has to exist by then.
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if statusItem?.button == nil {
+            // Said once here, not in setStatusIcon, which runs on every capture
+            // and would repeat the same line forever. No button means macOS gave
+            // us no menu bar slot, usually because the bar is full. Capture, the
+            // panel and the hotkey all still work, only the icon is missing.
+            Diag.capture.error("no menu bar button, the status icon will not be drawn")
+        }
         openStore()
         rebuildMenu()   // sets the icon too
 
-        watcher = PasteboardWatcher(
+        // The first read of watcher is what builds it, at the same moment in
+        // launch as the old assignment.
+        watcher.isPaused = { [weak self] in
+            self?.pause.isPaused(now: Date()) ?? false
+        }
+        // Rebuild capture settings whenever the user changes them, so a newly
+        // ignored app takes effect on the next copy rather than after a restart.
+        watcher.settingsProvider = { [weak self] in
+            self?.settings.captureSettings ?? .standard
+        }
+        settings.onChange = { [weak self] in
+            Diag.capture.info("settings changed, capture rules reloaded")
+            self?.rebuildMenu()
+        }
+        watcher.start()
+
+        // A timed pause expires by itself, and nothing else would redraw the
+        // icon, so a resumed app would keep showing the pause glyph until the
+        // next copy. Redraws only on an actual change, so it costs nothing.
+        pauseTicker = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let paused = self.pause.isPaused(now: Date())
+                guard paused != self.lastPausedFlag else { return }
+                self.lastPausedFlag = paused
+                if !paused { Diag.capture.info("pause expired, resuming") }
+                self.rebuildMenu()
+            }
+        }
+
+        // Same again: this first read is what builds the panel, in the same
+        // place in launch as the old assignment.
+        panelController.boardProvider = { [weak self] in
+            guard let store = self?.store else { return ([], [:]) }
+            return ((try? store.allPinboards()) ?? [], (try? store.membership()) ?? [:])
+        }
+        panelController.onCreateBoard = { [weak self] name in
+            try? self?.store?.createPinboard(name: name)
+        }
+        panelController.onDeleteBoard = { [weak self] id in
+            try? self?.store?.deletePinboard(id: id)
+        }
+        panelController.onRenameBoard = { [weak self] id, name in
+            try? self?.store?.renamePinboard(id: id, to: name)
+        }
+        panelController.onToggleMembership = { [weak self] item, board in
+            guard let store = self?.store else { return }
+            let already = ((try? store.membership())?[board] ?? []).contains(item)
+            try? store.setMembership(item: item, board: board, on: !already)
+            Diag.panel.info("board membership now \(!already, privacy: .public)")
+        }
+        panelController.onCommit = { item, target in
+            let ok = Paster.paste(item, into: target)
+            if ok { Sounds.pasted() }
+            Diag.paste.info("pasted \(item.kind.rawValue, privacy: .public), \(item.imageData?.count ?? item.text.count, privacy: .public) bytes or chars, into \(target?.bundleIdentifier ?? "nil", privacy: .public), success \(ok, privacy: .public)")
+        }
+        hotKey = HotKey { [weak self] in
+            self?.panelController.toggle()
+        }
+        if hotKey == nil {
+            // Measured: two apps CAN both register the same hotkey and both
+            // fire, so this is not the only way coexistence goes wrong.
+            Diag.panel.error("Cmd+Shift+V is already taken. If the real Paste app is running, quit it.")
+        }
+    }
+
+    /// Builds the pasteboard watcher and its two callbacks.
+    ///
+    /// A separate factory only because a lazy property cannot hold forty lines
+    /// of closure and stay readable. It is called exactly once, by the first
+    /// read of `watcher`.
+    private func makeWatcher() -> PasteboardWatcher {
+        PasteboardWatcher(
             onCapture: { [weak self] item in
                 guard let self else { return }
                 self.history.add(item)
@@ -78,67 +180,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.rebuildMenu()
                 }
             })
-        watcher.isPaused = { [weak self] in
-            self?.pause.isPaused(now: Date()) ?? false
-        }
-        // Rebuild capture settings whenever the user changes them, so a newly
-        // ignored app takes effect on the next copy rather than after a restart.
-        watcher.settingsProvider = { [weak self] in
-            self?.settings.captureSettings ?? .standard
-        }
-        settings.onChange = { [weak self] in
-            Diag.capture.info("settings changed, capture rules reloaded")
-            self?.rebuildMenu()
-        }
-        watcher.start()
-
-        // A timed pause expires by itself, and nothing else would redraw the
-        // icon, so a resumed app would keep showing the pause glyph until the
-        // next copy. Redraws only on an actual change, so it costs nothing.
-        pauseTicker = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                let paused = self.pause.isPaused(now: Date())
-                guard paused != self.lastPausedFlag else { return }
-                self.lastPausedFlag = paused
-                if !paused { Diag.capture.info("pause expired, resuming") }
-                self.rebuildMenu()
-            }
-        }
-
-        panelController = PanelController(history: history)
-        panelController.boardProvider = { [weak self] in
-            guard let store = self?.store else { return ([], [:]) }
-            return ((try? store.allPinboards()) ?? [], (try? store.membership()) ?? [:])
-        }
-        panelController.onCreateBoard = { [weak self] name in
-            try? self?.store?.createPinboard(name: name)
-        }
-        panelController.onDeleteBoard = { [weak self] id in
-            try? self?.store?.deletePinboard(id: id)
-        }
-        panelController.onRenameBoard = { [weak self] id, name in
-            try? self?.store?.renamePinboard(id: id, to: name)
-        }
-        panelController.onToggleMembership = { [weak self] item, board in
-            guard let store = self?.store else { return }
-            let already = ((try? store.membership())?[board] ?? []).contains(item)
-            try? store.setMembership(item: item, board: board, on: !already)
-            Diag.panel.info("board membership now \(!already, privacy: .public)")
-        }
-        panelController.onCommit = { item, target in
-            let ok = Paster.paste(item, into: target)
-            if ok { Sounds.pasted() }
-            Diag.paste.info("pasted \(item.kind.rawValue, privacy: .public), \(item.imageData?.count ?? item.text.count, privacy: .public) bytes or chars, into \(target?.bundleIdentifier ?? "nil", privacy: .public), success \(ok, privacy: .public)")
-        }
-        hotKey = HotKey { [weak self] in
-            self?.panelController.toggle()
-        }
-        if hotKey == nil {
-            // Measured: two apps CAN both register the same hotkey and both
-            // fire, so this is not the only way coexistence goes wrong.
-            Diag.panel.error("Cmd+Shift+V is already taken. If the real Paste app is running, quit it.")
-        }
     }
 
     private func rebuildMenu() {
@@ -263,6 +304,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// dark menu bars. Without Accessibility macOS discards every synthesised
     /// event and reports nothing, so the app must contradict itself visibly.
     private func setStatusIcon(trusted: Bool, paused: Bool) {
+        // Returning here means there is no menu bar button to draw into, which
+        // only happens when macOS refused us a slot. That is reported once at
+        // launch, so this stays quiet: it would otherwise repeat on every
+        // capture. Capture, the panel and the hotkey are unaffected.
         guard let button = statusItem?.button else { return }
         button.title = ""
         // A paused app must not look identical to a working one, or you find
@@ -541,36 +586,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// as a result of a sync, so any other schedule is wasted work.
     private func runDedup() {
         guard let store else { return }
-        let pinned = (try? store.pinnedItemIDs()) ?? []
-        let plans = planDedup(history.items, pinned: pinned)
-        guard !plans.isEmpty else { return }
         do {
-            var folded = 0
-            for plan in plans {
-                // The survivor takes the newest timestamp in its group, so
-                // folding a fresh copy into an older row does not drag the item
-                // back down the history.
-                try store.touch(id: plan.survivor, at: plan.newestCreatedAt)
-                for id in plan.doomed {
-                    // A TOMBSTONE, not a hard delete.
-                    //
-                    // A hard delete looked right at first: both Macs fold in the
-                    // same direction, so neither should need telling. Measured
-                    // otherwise. The duplicate had already been uploaded, so a
-                    // hard delete left its object orphaned in the bucket with no
-                    // tombstone to condemn it (84 objects against 52 local
-                    // items), AND the other Mac still listed it in its manifest,
-                    // so the next sync downloaded it straight back.
-                    //
-                    // A tombstone is safe precisely because the survivor is
-                    // chosen by lowest id: both Macs condemn the same row, so a
-                    // tombstone can never delete the row the other side kept.
-                    try store.softDelete(id: id, at: plan.newestCreatedAt)
-                    folded += 1
-                }
-            }
+            // The folding itself lives in DedupRunner so the two device test can
+            // drive the exact code the app runs. Testing `planDedup` alone was
+            // not enough: the bug that shipped was in how the plan was APPLIED.
+            let pinned = (try? store.pinnedItemIDs()) ?? []
+            let folded = try applyDedup(in: store, items: history.items, pinned: pinned)
+            guard folded > 0 else { return }
             history.load(try store.loadAll(limit: 500))
-            Diag.sync.info("deduplicated \(folded, privacy: .public) duplicate items into \(plans.count, privacy: .public) survivors")
+            Diag.sync.info("deduplicated \(folded, privacy: .public) duplicate items")
             rebuildMenu()
         } catch {
             Diag.sync.error("dedup failed: \(String(describing: error), privacy: .public)")

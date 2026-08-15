@@ -1,6 +1,22 @@
 import Foundation
 import ClipdCore
 
+/// Why a sync payload could not be read.
+///
+/// Two cases on purpose, because the caller should treat them differently.
+/// `newerVersion` means the other Mac is ahead of this one and the right log
+/// line is "payload written by a newer version of Clipd, update this Mac".
+/// `malformed` means the bytes are damaged and retrying will not help.
+/// Rejected: one generic error, which would have left the sync log unable to
+/// tell a stale install apart from a corrupt object in the bucket.
+enum PayloadFormatError: Error, Equatable {
+    /// The payload carried the magic but a version byte this build does not know.
+    case newerVersion(UInt8)
+    /// Empty, truncated, or not a Clipd payload at all. The string is a fixed
+    /// reason for the log. It never contains payload content.
+    case malformed(String)
+}
+
 /// Maps HistoryItem to and from rows. Owns nothing else.
 final class SQLiteStore {
     private let db: Database
@@ -83,10 +99,21 @@ final class SQLiteStore {
     }
 
     /// A repeat copy. Bumps the sync clock without creating a second row.
+    /// Moves an item back to the top of the history.
+    ///
+    /// `created_at` is the position in the timeline, so it takes the given date.
+    /// `updated_at` is when this device changed the row, so it is always now,
+    /// and the two are deliberately not the same value. Rejected: writing the
+    /// given date into both, which is what this did. Dedup touches a survivor
+    /// with a timestamp that is often OLDER than the row the other Mac holds, so
+    /// the change lost the last writer wins comparison and never travelled. The
+    /// far Mac then kept the item at its old position, where a retention sweep
+    /// could expire something the near Mac had just refreshed.
     func touch(id: UUID, at date: Date) throws {
         let millis = Int64(date.timeIntervalSince1970 * 1000)
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
         try db.run("UPDATE items SET created_at = ?, updated_at = ? WHERE id = ?",
-                   [.int(millis), .int(millis), .text(id.uuidString)])
+                   [.int(millis), .int(now), .text(id.uuidString)])
     }
 
     /// The normal delete. A tombstone, so a sync cannot resurrect it.
@@ -177,10 +204,124 @@ final class SQLiteStore {
             }
     }
 
+    // MARK: - Payload format
+
+    /// The four bytes every v2 and later payload starts with. ASCII "CLPD".
+    static let payloadMagic = Data([0x43, 0x4C, 0x50, 0x44])
+
+    /// The version this build writes. Readers accept this and below.
+    static let currentPayloadVersion: UInt8 = 2
+
+    /// Reads any of the three payload shapes and returns the JSON metadata plus
+    /// the raw image bytes, if the payload carried any.
+    ///
+    /// The three shapes are:
+    ///
+    ///   v0  raw JSON, image base64 encoded inside it under "blob_data"
+    ///   v1  4 byte big endian JSON length, the JSON, then the raw image bytes
+    ///   v2  magic "CLPD", a version byte, then the v1 framing
+    ///
+    /// Why the check below cannot confuse them:
+    ///
+    /// A v0 payload starts with `{`, byte 0x7B, because `JSONSerialization`
+    /// writes an object with no leading whitespace and no byte order mark. No
+    /// framed payload can start with 0x7B: v1 starts with the high byte of a
+    /// length, and the JSON metadata is a few hundred bytes, so that high byte
+    /// is 0. v2 starts with `C`, byte 0x43. So byte 0 alone separates v0 from
+    /// the rest.
+    ///
+    /// The trap is v1 against v2, because a v1 length is four free bytes and
+    /// could in principle spell "CLPD". That would mean a JSON metadata block of
+    /// 0x434C5044 bytes, about 1.07 GB. The metadata holds only row fields, never
+    /// the image, so it cannot get near that. Even so, "cannot in practice" is a
+    /// weak rule to write a parser on, so the check does not rely on it. It also
+    /// looks at byte 4. In v1 byte 4 is the first byte of the JSON, always `{`.
+    /// In v2 byte 4 is the version byte. As long as no version number is ever
+    /// 0x7B, that is 123, the pair (magic, byte 4) tells v1 and v2 apart exactly,
+    /// with no appeal to how big a length is likely to be. Version 123 is
+    /// therefore reserved and must never be used.
+    ///
+    /// Rejected: sniffing for valid JSON by trying to parse and falling back on
+    /// failure. That turns every corrupt payload into a slow guess, and a v1
+    /// payload whose image bytes happen to parse as JSON would be read wrong.
+    private static func split(payload: Data) throws -> (meta: Data, image: Data?) {
+        // Data slices keep the indices of the parent, so every offset below is
+        // written relative to startIndex. Assuming 0 is a real index is the
+        // classic way to crash on a sliced Data.
+        let start = payload.startIndex
+        guard !payload.isEmpty else {
+            throw PayloadFormatError.malformed("payload is empty")
+        }
+
+        if payload[start] == 0x7B {
+            // v0. The whole payload is the JSON, image included as base64.
+            return (payload, nil)
+        }
+
+        // Both framed formats need at least a 4 byte prefix and one more byte
+        // to disambiguate, so anything shorter is not a payload at all.
+        guard payload.count >= 5 else {
+            throw PayloadFormatError.malformed("payload is too short to be framed")
+        }
+
+        if payload.subdata(in: start ..< start + 4) == payloadMagic, payload[start + 4] != 0x7B {
+            let version = payload[start + 4]
+            guard version <= currentPayloadVersion else {
+                throw PayloadFormatError.newerVersion(version)
+            }
+            // v0 and v1 never carried the magic, so a version below 2 here means
+            // a corrupt payload rather than an older one.
+            guard version == currentPayloadVersion else {
+                throw PayloadFormatError.malformed("framed payload claims an impossible version")
+            }
+            return try frame(payload, jsonStartsAt: 9, lengthAt: 5)
+        }
+
+        // v1. Byte 4 must be `{` or this is not a payload we know.
+        guard payload[start + 4] == 0x7B else {
+            throw PayloadFormatError.malformed("payload matches no known format")
+        }
+        return try frame(payload, jsonStartsAt: 4, lengthAt: 0)
+    }
+
+    /// The shared tail of v1 and v2: a big endian length, the JSON, then the rest.
+    private static func frame(_ payload: Data,
+                              jsonStartsAt jsonOffset: Int,
+                              lengthAt lengthOffset: Int) throws -> (meta: Data, image: Data?) {
+        let start = payload.startIndex
+        guard payload.count >= lengthOffset + 4 else {
+            throw PayloadFormatError.malformed("payload ends inside its length field")
+        }
+        let lengthBytes = payload.subdata(in: (start + lengthOffset) ..< (start + lengthOffset + 4))
+        let length = Int(lengthBytes.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
+        // A length that runs past the end means a truncated or corrupt payload.
+        // Throw rather than slice out of bounds, which would crash the sync pass.
+        guard payload.count >= jsonOffset + length else {
+            throw PayloadFormatError.malformed("declared metadata length runs past the end")
+        }
+        let meta = payload.subdata(in: (start + jsonOffset) ..< (start + jsonOffset + length))
+        let rest = payload.subdata(in: (start + jsonOffset + length) ..< payload.endIndex)
+        return (meta, rest.isEmpty ? nil : rest)
+    }
+
     /// The full row, ready to be encrypted and uploaded.
     ///
-    /// Framed as a 4 byte big endian JSON length, then the JSON metadata, then
-    /// the raw image bytes. Rejected: base64 inside the JSON, which is what this
+    /// Payload format v2. The byte layout is:
+    ///
+    ///     offset 0   4 bytes   magic "CLPD"
+    ///     offset 4   1 byte    format version, currently 2
+    ///     offset 5   4 bytes   JSON metadata length, big endian UInt32
+    ///     offset 9   N bytes   the JSON metadata
+    ///     offset 9+N rest      the raw image bytes, or nothing for a text item
+    ///
+    /// The magic and the version byte are the point of v2. The older formats had
+    /// no version field, so a reader had to guess the shape from the first byte.
+    /// Guessing does not extend to a third format and gives a receiver no way to
+    /// say "this was written by a newer Clipd than me". Rejected: a JSON envelope
+    /// with a "version" key wrapping the rest, which would put the image bytes
+    /// back inside JSON and undo the whole reason v1 existed.
+    ///
+    /// Rejected for the image bytes: base64 inside the JSON, which is what v1
     /// replaced. Base64 inflates binary by a third, so a 2.7 MB screenshot cost
     /// a 3.76 MB upload and bought nothing.
     func payload(for id: UUID) throws -> Data? {
@@ -203,6 +344,8 @@ final class SQLiteStore {
         let meta = try JSONSerialization.data(withJSONObject: json)
 
         var out = Data()
+        out.append(Self.payloadMagic)
+        out.append(Self.currentPayloadVersion)
         // Big endian because it is the usual wire order, so a future non-Mac
         // reader does not need to know how this machine stores integers.
         var header = UInt32(meta.count).bigEndian
@@ -219,37 +362,20 @@ final class SQLiteStore {
 
     /// Writes a row that came from the other Mac.
     ///
-    /// Reads both payload formats on purpose. The other Mac may still be running
-    /// the old build, which uploaded plain JSON with the image base64 encoded
-    /// under "blob_data". A payload whose first byte is `{` is that old format.
-    /// Dropping it would strand a pair of Macs on different versions, each
-    /// unable to read what the other uploads, so the old path stays until both
-    /// ends are known to be new.
+    /// Reads all three payload formats on purpose. The user has two Macs and they
+    /// will sit on different app versions for a while. A payload this build cannot
+    /// read is an item that silently never arrives, so the older readers stay until
+    /// both ends are known to be new.
     func apply(payload: Data) throws {
-        guard let firstByte = payload.first else { return }
-
-        var meta = payload
-        var imageData: Data?
-        if firstByte != 0x7B {
-            // New format: 4 byte big endian JSON length, the JSON, then the raw
-            // image bytes if there are any.
-            guard payload.count >= 4 else { return }
-            let start = payload.startIndex
-            let length = Int(payload[start ..< start + 4]
-                .reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
-            // A length that runs past the end means a truncated or corrupt
-            // payload. Return rather than slice out of bounds and crash.
-            guard payload.count >= 4 + length else { return }
-            meta = payload.subdata(in: (start + 4) ..< (start + 4 + length))
-            let rest = payload.subdata(in: (start + 4 + length) ..< payload.endIndex)
-            if !rest.isEmpty { imageData = rest }
-        }
+        let parsed = try Self.split(payload: payload)
+        let meta = parsed.meta
+        var imageData = parsed.image
 
         guard let json = try JSONSerialization.jsonObject(with: meta) as? [String: Any],
               let idString = json["id"] as? String, let id = UUID(uuidString: idString) else {
-            return
+            throw PayloadFormatError.malformed("metadata is not a JSON object with an id")
         }
-        // Only the old format puts the image in the JSON.
+        // Only v0 puts the image in the JSON.
         if imageData == nil, let base64 = json["blob_data"] as? String {
             imageData = Data(base64Encoded: base64)
         }

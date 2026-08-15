@@ -79,8 +79,24 @@ final class SyncEngine {
 
             case .download(let id):
                 guard let sealed = try await client.get(prefix + "items/\(id.uuidString).enc") else { continue }
-                try store.apply(payload: try SyncCrypto.open(sealed, with: key))
-                downloaded += 1
+                do {
+                    try store.apply(payload: try SyncCrypto.open(sealed, with: key))
+                    downloaded += 1
+                } catch let error as PayloadFormatError {
+                    // Skip the object, finish the pass. Rejected: letting this
+                    // throw, which is what it did when the payload format grew a
+                    // version header. One object written by a newer Clipd would
+                    // then abort the whole sync, so this Mac would stop syncing
+                    // EVERYTHING until the other Mac was downgraded. The same
+                    // reasoning as the undecryptable manifest above: one bad
+                    // object must cost one item, not the session.
+                    switch error {
+                    case .newerVersion(let v):
+                        Diag.sync.error("skipping an item written by a newer version of Clipd (format \(v, privacy: .public)), update this Mac")
+                    case .malformed(let reason):
+                        Diag.sync.error("skipping a corrupt item payload: \(reason, privacy: .public)")
+                    }
+                }
 
             case .applyTombstone(let id):
                 try store.applyTombstone(id: id, at: Date())

@@ -83,9 +83,32 @@ public func planSync(local: [SyncRecord], remote: [SyncRecord]) -> [SyncAction] 
                 // megabytes.
                 return theirs.isTombstone ? .applyTombstone(id) : .download(id)
             }
-            // Equal timestamps. Break the tie on device id so BOTH Macs reach
-            // the same answer. Without this they disagree forever, each
-            // uploading over the other on every pass.
+            // Equal timestamps, and one side is a tombstone. The DELETE wins,
+            // whichever side holds it.
+            //
+            // Measured, not predicted. Dedup stamped its tombstone with the
+            // duplicate's own timestamp, which tied exactly with the live row on
+            // the other Mac. The tie then fell through to the device id rule
+            // below, which can only answer "nothing" or "download", so the
+            // tombstone was dropped and the two Macs disagreed forever: one
+            // showed the duplicate folded away, the other kept showing both.
+            // The stamping is fixed too, but a tie can happen for other reasons
+            // (the same millisecond, a re-imported row), and a rule that can
+            // silently ignore a deletion is the wrong shape.
+            //
+            // This converges: the side holding the tombstone uploads it, the
+            // side holding the live row applies it, and both land on deleted.
+            if mine.isTombstone != theirs.isTombstone {
+                return mine.isTombstone ? .upload(id) : .applyTombstone(id)
+            }
+            // Both sides already agree the item is gone, so there is nothing to
+            // exchange. Without this the device id rule below answers "download"
+            // for one of the two Macs, which re-fetches a deleted item on every
+            // pass for the life of the app.
+            if mine.isTombstone { return .nothing(id) }
+            // Break the tie on device id so BOTH Macs reach the same answer.
+            // Without this they disagree forever, each uploading over the other
+            // on every pass.
             if mine.deviceID == theirs.deviceID { return .nothing(id) }
             return mine.deviceID > theirs.deviceID ? .nothing(id) : .download(id)
         case (.some, .none):

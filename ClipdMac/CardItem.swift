@@ -74,6 +74,19 @@ final class CardItem: NSCollectionViewItem {
     private var indexLabel: NSTextField!
     private var card: NSView!
 
+    /// The prose look of the body label, kept here because a code card
+    /// overwrites both and a recycled cell has to be put back exactly.
+    private static let proseFont = NSFont.systemFont(ofSize: 12)
+    private static let proseColor = NSColor(calibratedWhite: 0.92, alpha: 1)
+    private static let proseLines = 8
+
+    /// How much of the text is handed to the preview builder.
+    ///
+    /// A card shows at most 12 lines, so normalising and dedenting a 3 MB paste
+    /// in full would be wasted work on every scroll. 4000 characters is far
+    /// more than 12 lines of anything.
+    private static let codeScanLimit = 4000
+
     private var itemKind: ItemKind = .text
     /// The colours of every board this item is filed on, in board order.
     private var boardColors: [String] = []
@@ -132,9 +145,9 @@ final class CardItem: NSCollectionViewItem {
         bodyLabel = NSTextField(wrappingLabelWithString: "")
         bodyLabel.frame = NSRect(x: 12, y: 34, width: CardItem.size.width - 24,
                                  height: CardItem.size.height - 58 - 44)
-        bodyLabel.font = .systemFont(ofSize: 12)
-        bodyLabel.textColor = NSColor(calibratedWhite: 0.92, alpha: 1)
-        bodyLabel.maximumNumberOfLines = 8
+        bodyLabel.font = CardItem.proseFont
+        bodyLabel.textColor = CardItem.proseColor
+        bodyLabel.maximumNumberOfLines = CardItem.proseLines
         // Wrap, then truncate the last line. Rejected: .byTruncatingTail here,
         // which collapsed the whole label to a single truncated line even with
         // maximumNumberOfLines above 1.
@@ -191,7 +204,10 @@ final class CardItem: NSCollectionViewItem {
         switch item.kind {
         case .link:  kindLabel.stringValue = "Link"
         case .image: kindLabel.stringValue = "Image"
-        case .text:  kindLabel.stringValue = "Text"
+        // "Swift" or "YAML" instead of "Text" when we know. The header is the
+        // only place with room to say it, and it doubles as a check on the
+        // detector: if a card says JSON over an email, the rules are wrong.
+        case .text:  kindLabel.stringValue = item.codeLanguage?.displayName ?? "Text"
         }
         timeLabel.stringValue = CardItem.age(of: item.createdAt)
         iconView.image = AppIconCache.icon(forBundleID: item.sourceBundleID)
@@ -207,12 +223,47 @@ final class CardItem: NSCollectionViewItem {
             previewImageView.image = nil
             previewImageView.isHidden = true
             bodyLabel.isHidden = false
-            bodyLabel.stringValue = item.preview
+            if let language = item.codeLanguage {
+                showCode(item.text, as: language)
+            } else {
+                showProse(item.preview)
+            }
             countLabel.stringValue = "\(item.text.count) characters"
         }
         indexLabel.stringValue = "\(index + 1)"
         rebuildBoardDots()
         applySelection()
+    }
+
+    /// The code body: real newlines, real indentation, monospaced, coloured.
+    ///
+    /// Built from `text` rather than `preview`. `preview` is the flattened
+    /// single line string that is persisted and searched, and reshaping it here
+    /// would mean changing a stored column and migrating the database for
+    /// nothing, because the full text is already on the item.
+    private func showCode(_ text: String, as language: CodeLanguage) {
+        let source = makeCodePreview(String(text.prefix(CardItem.codeScanLimit)),
+                                     maxLines: CodeStyle.maximumLines)
+        bodyLabel.maximumNumberOfLines = CodeStyle.maximumLines
+        bodyLabel.lineBreakMode = CodeStyle.lineBreak
+        bodyLabel.attributedStringValue =
+            CodeStyle.attributedString(for: highlight(source, as: language))
+    }
+
+    /// The ordinary body, and the reset path for a recycled cell.
+    ///
+    /// Cells are reused, so every property `showCode` touches has to be put
+    /// back here. Without this, scrolling past one JSON card leaves the next
+    /// email rendered in pink monospace, which is the classic recycling bug.
+    private func showProse(_ preview: String) {
+        bodyLabel.font = CardItem.proseFont
+        bodyLabel.textColor = CardItem.proseColor
+        bodyLabel.maximumNumberOfLines = CardItem.proseLines
+        bodyLabel.lineBreakMode = .byWordWrapping
+        // Assigning stringValue clears any attributed string that a previous
+        // code card left behind, which is why the font and colour above are set
+        // first: they are what the label falls back to.
+        bodyLabel.stringValue = preview
     }
 
     override var isSelected: Bool {
