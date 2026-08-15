@@ -37,6 +37,18 @@ public final class History {
         storage.removeFirst()
     }
 
+    /// Deletes one item by identity. Returns true if something was removed.
+    ///
+    /// Identity rather than index, because the panel filters: the card at
+    /// position 3 on screen is not row 3 of the history. Deleting by index
+    /// would remove the wrong item whenever a search is active.
+    @discardableResult
+    public func remove(id: UUID) -> Bool {
+        guard let index = storage.firstIndex(where: { $0.id == id }) else { return false }
+        storage.remove(at: index)
+        return true
+    }
+
     /// Plain token matching, every token must be present, any order, case
     /// insensitive. Rejected: relevance ranking, which buries the thing you
     /// copied 30 seconds ago under an older better match. A clipboard history

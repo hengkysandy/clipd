@@ -83,3 +83,29 @@ func kindDetection() {
     #expect(item("").kind == .text)
     #expect(item("   ").kind == .text)
 }
+
+@Test("Remove by id deletes the right item, even while a search is filtering")
+func removeByID() {
+    let history = History()
+    _ = history.add(item("keep one", at: 100))
+    _ = history.add(item("delete me", at: 200))
+    _ = history.add(item("keep two", at: 300))
+
+    // The panel shows filtered results, so position on screen is not position
+    // in history. Deleting by index would remove the wrong row here.
+    let filtered = history.search("delete")
+    #expect(filtered.count == 1)
+    #expect(history.remove(id: filtered[0].id) == true)
+    #expect(history.items.map(\.text) == ["keep two", "keep one"])
+}
+
+@Test("Removing an id that is not present is a no-op, not a crash")
+func removeMissingID() {
+    let history = History()
+    _ = history.add(item("only", at: 100))
+    #expect(history.remove(id: UUID()) == false)
+    #expect(history.items.count == 1)
+    // And on an empty history.
+    let empty = History()
+    #expect(empty.remove(id: UUID()) == false)
+}

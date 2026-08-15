@@ -8,6 +8,17 @@ private final class ClipdPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// Refuses first responder so a click on a card never takes focus away from
+/// the search field.
+///
+/// Without this, clicking a card moved first responder to the collection view,
+/// and every keyboard shortcut silently stopped working: Escape did nothing
+/// until you clicked back into the search field. Keeping one first responder
+/// means one place handles keys, which is also how Spotlight behaves.
+private final class NonFocusingCollectionView: NSCollectionView {
+    override var acceptsFirstResponder: Bool { false }
+}
+
 @MainActor
 final class PanelController: NSObject, NSTextFieldDelegate,
                              NSCollectionViewDataSource, NSCollectionViewDelegate {
@@ -28,6 +39,7 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     private var scroll: NSScrollView!
     private var results: [HistoryItem] = []
     private var selection: Int = 0
+    private var isDismissing = false
 
     /// The app that was frontmost when the panel opened. Everything depends on
     /// putting it back before pasting.
@@ -75,6 +87,21 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         buildCollection(in: content, width: screenWidth)
 
         panel.contentView = content
+
+        // Click anywhere outside and the panel goes away. Losing key status is
+        // the signal: it covers clicking another app, clicking the desktop and
+        // switching apps with Cmd+Tab, which a click monitor would not.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(panelResignedKey),
+            name: NSWindow.didResignKeyNotification, object: panel)
+    }
+
+    @objc private func panelResignedKey() {
+        // The guard matters. Committing a paste orders the panel out and
+        // activates the previous app, which itself resigns key. Without this
+        // the dismiss animation would run a second time on top of itself.
+        guard panel.isVisible, !isDismissing else { return }
+        dismiss()
     }
 
     private func buildTopBar(in content: NSVisualEffectView, width: CGFloat) {
@@ -119,7 +146,7 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         layout.minimumInteritemSpacing = 12
         layout.sectionInset = NSEdgeInsets(top: 0, left: 22, bottom: 0, right: 22)
 
-        collection = NSCollectionView()
+        collection = NonFocusingCollectionView()
         collection.collectionViewLayout = layout
         collection.dataSource = self
         collection.delegate = self
@@ -140,6 +167,17 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         scroll.drawsBackground = false
         scroll.autohidesScrollers = true
         content.addSubview(scroll)
+
+    }
+
+    /// One click selects, two pastes. Clicks arrive from the card itself, not
+    /// from a gesture recognizer, which never fired.
+    private func handleCardClick(index: Int, clickCount: Int) {
+        Diag.panel.debug("card click index \(index, privacy: .public) clicks \(clickCount, privacy: .public)")
+        guard index >= 0, index < results.count else { return }
+        selection = index
+        applySelection(scroll: false)
+        if clickCount >= 2 { commitSelection() }
     }
 
     // MARK: - Show and hide
@@ -191,6 +229,8 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     /// Slides down, then runs `then`. The paste must happen AFTER the panel is
     /// gone and focus is restored, so the completion is not optional politeness.
     private func hide(then: (() -> Void)?) {
+        guard !isDismissing else { return }
+        isDismissing = true
         var target = panel.frame
         target.origin.y = onscreenFrame().minY - Self.panelHeight
         NSAnimationContext.runAnimationGroup({ ctx in
@@ -202,6 +242,7 @@ final class PanelController: NSObject, NSTextFieldDelegate,
             self.panel.orderOut(nil)
             self.field.stringValue = ""
             self.previousApp?.activate()
+            self.isDismissing = false
             then?()
         })
     }
@@ -267,12 +308,39 @@ final class PanelController: NSObject, NSTextFieldDelegate,
             selection -= 1
             applySelection(scroll: true)
             return true
+        // Backspace deletes the selected card, but ONLY when the search box is
+        // empty. Otherwise backspace has to keep editing the search text, or
+        // correcting a typo would silently destroy history.
+        case #selector(NSResponder.deleteBackward(_:)):
+            guard field.stringValue.isEmpty else { return false }
+            deleteSelected()
+            return true
+        // Forward delete always deletes the card, since it never edits
+        // backwards over what you just typed.
+        case #selector(NSResponder.deleteForward(_:)):
+            deleteSelected()
+            return true
         default:
             return false
         }
     }
 
+    private func deleteSelected() {
+        guard selection >= 0, selection < results.count else { return }
+        let doomed = results[selection]
+        let removed = history.remove(id: doomed.id)
+        Diag.panel.info("deleted 1 item, \(doomed.text.count, privacy: .public) chars, removed \(removed, privacy: .public)")
+        let previousSelection = selection
+        results = history.search(field.stringValue)
+        collection.reloadData()
+        // Keep the cursor where it was rather than jumping to the start, so
+        // holding backspace deletes a run of items the way you would expect.
+        selection = min(previousSelection, max(results.count - 1, 0))
+        applySelection(scroll: true)
+    }
+
     private func commitSelection() {
+        Diag.panel.debug("commit with selection \(self.selection, privacy: .public) of \(self.results.count, privacy: .public)")
         guard selection >= 0, selection < results.count else { dismiss(); return }
         let chosen = results[selection]
         let target = previousApp
@@ -294,6 +362,9 @@ final class PanelController: NSObject, NSTextFieldDelegate,
                                            for: indexPath)
         if let card = cell as? CardItem, indexPath.item < results.count {
             card.configure(with: results[indexPath.item], index: indexPath.item)
+            card.onClick = { [weak self] index, clicks in
+                self?.handleCardClick(index: index, clickCount: clicks)
+            }
         }
         return cell
     }

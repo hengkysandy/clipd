@@ -28,6 +28,20 @@ private let relativeFormatter: RelativeDateTimeFormatter = {
     return f
 }()
 
+/// Reports clicks with their count.
+///
+/// Rejected: an NSClickGestureRecognizer on the collection view. Measured: it
+/// never fired at all, because NSCollectionView consumes mouse events before
+/// gesture recognizers attached to it. Handling mouseDown on the card itself
+/// works and also makes selection deterministic rather than dependent on the
+/// collection view's internal hit testing.
+private final class CardRootView: NSView {
+    var onClick: ((Int) -> Void)?
+    override func mouseDown(with event: NSEvent) {
+        onClick?(event.clickCount)
+    }
+}
+
 /// One clipboard card: header, body, footer.
 ///
 /// Built in code rather than a nib. Rejected: a xib, because XcodeGen would
@@ -49,10 +63,18 @@ final class CardItem: NSCollectionViewItem {
     private var card: NSView!
 
     private var itemKind: ItemKind = .text
+    private var index: Int = 0
+
+    /// Called with (index, clickCount). One click selects, two activates.
+    var onClick: ((Int, Int) -> Void)?
 
     override func loadView() {
-        let root = NSView(frame: NSRect(origin: .zero, size: CardItem.size))
+        let root = CardRootView(frame: NSRect(origin: .zero, size: CardItem.size))
         root.wantsLayer = true
+        root.onClick = { [weak self] count in
+            guard let self else { return }
+            self.onClick?(self.index, count)
+        }
 
         card = NSView(frame: root.bounds)
         card.wantsLayer = true
@@ -132,6 +154,7 @@ final class CardItem: NSCollectionViewItem {
     }
 
     func configure(with item: HistoryItem, index: Int) {
+        self.index = index
         itemKind = item.kind
         kindLabel.stringValue = item.kind == .link ? "Link" : "Text"
         timeLabel.stringValue = CardItem.age(of: item.createdAt)
