@@ -6,6 +6,9 @@ struct SyncSummary: Equatable {
     let uploaded: Int
     let downloaded: Int
     let tombstoned: Int
+    /// Objects removed from the bucket this pass, because their item is
+    /// tombstoned locally.
+    let pruned: Int
 }
 
 /// One sync pass.
@@ -64,7 +67,7 @@ final class SyncEngine {
             }
         }
 
-        var uploaded = 0, downloaded = 0, tombstoned = 0
+        var uploaded = 0, downloaded = 0, tombstoned = 0, pruned = 0
 
         for action in planSync(local: local, remote: remote) {
             switch action {
@@ -87,6 +90,39 @@ final class SyncEngine {
                 break
             }
         }
+
+        // Prune the objects behind items we have deleted. A tombstone alone only
+        // hides the row, so without this the bucket grows forever, and an image
+        // costs megabytes per deleted item.
+        //
+        // The decision to prune an id comes from OUR OWN local records and
+        // nothing else. Rejected: pruning from a remote manifest, or from the
+        // merged view of all manifests. A device that has not yet learned about
+        // an item has no record for it at all, so a manifest driven rule would
+        // let one device delete the object out from under another device that
+        // still needs to download it. Reading our own tombstones can only ever
+        // delete something we ourselves already decided is gone.
+        //
+        // Re-read rather than reuse `local`: the loop above may have just
+        // applied tombstones that arrived from the other Mac, and those objects
+        // are exactly the ones worth pruning this pass.
+        let doomed = Set(try store.allRecords()
+            .filter { $0.deletedAt != nil }
+            .map { prefix + "items/\($0.id.uuidString).enc" })
+
+        // Listing first, then deleting only the keys that are really there, so a
+        // pass costs one LIST instead of one DELETE per tombstone. Tombstones are
+        // permanent, so the naive version would re-delete every item we have ever
+        // deleted, on every pass, forever. The listing only narrows the work: an
+        // id still has to be in `doomed` to be touched.
+        for key in try await client.list(prefix: prefix + "items/") where doomed.contains(key) {
+            // try? so one failed delete does not abort the pass. The object
+            // stays, and the next pass retries it, because the tombstone that
+            // condemned it is permanent.
+            try? await client.delete(key)
+            pruned += 1
+        }
+        Diag.sync.info("pruned \(pruned, privacy: .public) bucket objects for tombstoned items")
 
         // Boards, by exactly the same rules. Kept separate from items so a
         // board can never be mistaken for a clipping.
@@ -124,7 +160,8 @@ final class SyncEngine {
         let sealed = try SyncCrypto.seal(try JSONEncoder().encode(manifest), with: key)
         _ = try await client.put(prefix + "manifests/\(deviceID).json.enc", sealed)
 
-        return SyncSummary(uploaded: uploaded, downloaded: downloaded, tombstoned: tombstoned)
+        return SyncSummary(uploaded: uploaded, downloaded: downloaded,
+                           tombstoned: tombstoned, pruned: pruned)
     }
 
     /// Fetches the shared salt, creating it once if this is the first device.

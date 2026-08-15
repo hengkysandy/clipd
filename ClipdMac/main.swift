@@ -3,7 +3,12 @@ import ClipdCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var statusItem: NSStatusItem!
+    /// Optional, not force unwrapped.
+    ///
+    /// openStore() runs before the status item is built and can call
+    /// rebuildMenu() through the dedup and retention sweeps. A force unwrap
+    /// crashed the app on launch whenever either found work to do.
+    private var statusItem: NSStatusItem?
     private var watcher: PasteboardWatcher!
     private var hotKey: HotKey?
     private var panelController: PanelController!
@@ -24,8 +29,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installEditMenu()
-        openStore()
+        // The status item first. openStore() runs the dedup and retention
+        // sweeps, both of which rebuild the menu, so it has to exist by then.
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        openStore()
         rebuildMenu()   // sets the icon too
 
         watcher = PasteboardWatcher(
@@ -193,7 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let quit = NSMenuItem(title: "Quit Clipd", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
-        statusItem.menu = menu
+        statusItem?.menu = menu
     }
 
     @objc private func pauseCapture(_ sender: NSMenuItem) {
@@ -256,7 +263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// dark menu bars. Without Accessibility macOS discards every synthesised
     /// event and reports nothing, so the app must contradict itself visibly.
     private func setStatusIcon(trusted: Bool, paused: Bool) {
-        guard let button = statusItem.button else { return }
+        guard let button = statusItem?.button else { return }
         button.title = ""
         // A paused app must not look identical to a working one, or you find
         // out it recorded nothing an hour later.
@@ -317,6 +324,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             self.database = db
             self.store = store
+            runDedup()
             runRetentionSweep()
             retentionTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.runRetentionSweep() }
@@ -414,6 +422,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await MainActor.run {
                     self.history.load(refreshed)
                     self.isSyncing = false
+                    // Duplicates can only arrive via a sync, so this is the
+                    // only moment worth checking.
+                    self.runDedup()
                     self.lastSyncAt = Date()
                     self.lastSyncSummary = "\(summary.uploaded) up, \(summary.downloaded) down, "
                         + "\(summary.tombstoned) deleted, \(refreshed.count) items"
@@ -517,6 +528,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let (credentials, passphrase) = try? SyncCredentialStore.load() else { return }
         Diag.sync.info("auto sync starting (\(reason, privacy: .public))")
         runSync(credentials: credentials, passphrase: passphrase, report: { _ in })
+    }
+
+    /// Folds duplicate content that arrived from the other Mac.
+    ///
+    /// Each device already refuses a duplicate of something it copied itself.
+    /// Sync merges on id, so the same text copied independently on both Macs
+    /// produces two rows with identical content and both survive. This collapses
+    /// them, keeping the lowest id so BOTH Macs pick the same survivor.
+    ///
+    /// Runs after every sync rather than on a timer: duplicates can only appear
+    /// as a result of a sync, so any other schedule is wasted work.
+    private func runDedup() {
+        guard let store else { return }
+        let pinned = (try? store.pinnedItemIDs()) ?? []
+        let plans = planDedup(history.items, pinned: pinned)
+        guard !plans.isEmpty else { return }
+        do {
+            var folded = 0
+            for plan in plans {
+                // The survivor takes the newest timestamp in its group, so
+                // folding a fresh copy into an older row does not drag the item
+                // back down the history.
+                try store.touch(id: plan.survivor, at: plan.newestCreatedAt)
+                for id in plan.doomed {
+                    // A TOMBSTONE, not a hard delete.
+                    //
+                    // A hard delete looked right at first: both Macs fold in the
+                    // same direction, so neither should need telling. Measured
+                    // otherwise. The duplicate had already been uploaded, so a
+                    // hard delete left its object orphaned in the bucket with no
+                    // tombstone to condemn it (84 objects against 52 local
+                    // items), AND the other Mac still listed it in its manifest,
+                    // so the next sync downloaded it straight back.
+                    //
+                    // A tombstone is safe precisely because the survivor is
+                    // chosen by lowest id: both Macs condemn the same row, so a
+                    // tombstone can never delete the row the other side kept.
+                    try store.softDelete(id: id, at: plan.newestCreatedAt)
+                    folded += 1
+                }
+            }
+            history.load(try store.loadAll(limit: 500))
+            Diag.sync.info("deduplicated \(folded, privacy: .public) duplicate items into \(plans.count, privacy: .public) survivors")
+            rebuildMenu()
+        } catch {
+            Diag.sync.error("dedup failed: \(String(describing: error), privacy: .public)")
+        }
     }
 
     @objc private func quit() { NSApp.terminate(nil) }

@@ -177,7 +177,12 @@ final class SQLiteStore {
             }
     }
 
-    /// The full row as JSON, ready to be encrypted and uploaded.
+    /// The full row, ready to be encrypted and uploaded.
+    ///
+    /// Framed as a 4 byte big endian JSON length, then the JSON metadata, then
+    /// the raw image bytes. Rejected: base64 inside the JSON, which is what this
+    /// replaced. Base64 inflates binary by a third, so a 2.7 MB screenshot cost
+    /// a 3.76 MB upload and bought nothing.
     func payload(for id: UUID) throws -> Data? {
         let rows = try db.query("""
             SELECT id, kind, created_at, updated_at, deleted_at, device_id,
@@ -195,23 +200,61 @@ final class SQLiteStore {
             case .blob, .null: break
             }
         }
-        // The image bytes travel inside the payload, base64 encoded. Rejected:
+        let meta = try JSONSerialization.data(withJSONObject: json)
+
+        var out = Data()
+        // Big endian because it is the usual wire order, so a future non-Mac
+        // reader does not need to know how this machine stores integers.
+        var header = UInt32(meta.count).bigEndian
+        withUnsafeBytes(of: &header) { out.append(contentsOf: $0) }
+        out.append(meta)
+        // The image bytes still travel inside the same payload. Rejected:
         // a second object per image, which doubles the request count and makes
         // an item and its picture separately losable.
         if case .text(let ref)? = row["blob_ref"], let data = try? blobs.read(ref) {
-            json["blob_data"] = data.base64EncodedString()
+            out.append(data)
         }
-        return try JSONSerialization.data(withJSONObject: json)
+        return out
     }
 
     /// Writes a row that came from the other Mac.
+    ///
+    /// Reads both payload formats on purpose. The other Mac may still be running
+    /// the old build, which uploaded plain JSON with the image base64 encoded
+    /// under "blob_data". A payload whose first byte is `{` is that old format.
+    /// Dropping it would strand a pair of Macs on different versions, each
+    /// unable to read what the other uploads, so the old path stays until both
+    /// ends are known to be new.
     func apply(payload: Data) throws {
-        guard let json = try JSONSerialization.jsonObject(with: payload) as? [String: Any],
+        guard let firstByte = payload.first else { return }
+
+        var meta = payload
+        var imageData: Data?
+        if firstByte != 0x7B {
+            // New format: 4 byte big endian JSON length, the JSON, then the raw
+            // image bytes if there are any.
+            guard payload.count >= 4 else { return }
+            let start = payload.startIndex
+            let length = Int(payload[start ..< start + 4]
+                .reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
+            // A length that runs past the end means a truncated or corrupt
+            // payload. Return rather than slice out of bounds and crash.
+            guard payload.count >= 4 + length else { return }
+            meta = payload.subdata(in: (start + 4) ..< (start + 4 + length))
+            let rest = payload.subdata(in: (start + 4 + length) ..< payload.endIndex)
+            if !rest.isEmpty { imageData = rest }
+        }
+
+        guard let json = try JSONSerialization.jsonObject(with: meta) as? [String: Any],
               let idString = json["id"] as? String, let id = UUID(uuidString: idString) else {
             return
         }
+        // Only the old format puts the image in the JSON.
+        if imageData == nil, let base64 = json["blob_data"] as? String {
+            imageData = Data(base64Encoded: base64)
+        }
         var blobRef: SQLValue = .null
-        if let base64 = json["blob_data"] as? String, let data = Data(base64Encoded: base64) {
+        if let data = imageData {
             blobRef = .text(try blobs.write(data, id: id))
         }
         func text(_ key: String) -> SQLValue {
