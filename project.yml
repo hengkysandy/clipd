@@ -6,6 +6,13 @@ options:
 packages:
   ClipdCore:
     path: .                     # the SwiftPM package in this same folder
+  # Prebuilt binary target, 176K to check out. Rejected: GRDB, whose SQLCipher
+  # support is not a selectable product. Its own Package.swift says "uncomment
+  # those lines", and a dependency's manifest cannot be edited by its consumer,
+  # so using it would mean forking and maintaining GRDB.
+  SQLCipher:
+    url: https://github.com/sqlcipher/SQLCipher.swift.git
+    from: 4.17.0
 
 targets:
   ClipdMac:
@@ -15,6 +22,8 @@ targets:
     dependencies:
       - package: ClipdCore
         product: ClipdCore
+      - package: SQLCipher
+        product: SQLCipher
     info:
       path: ClipdMac/Info.plist
       properties:
