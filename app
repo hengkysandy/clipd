@@ -56,6 +56,34 @@ case "${1:-}" in
     xcodebuild -project "$APP_NAME.xcodeproj" -scheme "$APP_NAME" \
                -derivedDataPath "$DERIVED" "${SIGNING[@]}" test
     ;;
+  dmg)
+    # Builds a Release .app and wraps it in a DMG with a drag-to-Applications
+    # target. Rejected: shipping the Debug build, which carries assertions and
+    # is slower for no benefit to the person installing it.
+    VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+              "$DERIVED/Build/Products/Release/$APP_NAME.app/Contents/Info.plist" 2>/dev/null || echo "0.1.0")
+    xcodegen generate
+    xcodebuild -project "$APP_NAME.xcodeproj" -scheme "$APP_NAME" \
+               -configuration Release -derivedDataPath "$DERIVED" \
+               "${SIGNING[@]}" build
+    VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+              "$DERIVED/Build/Products/Release/$APP_NAME.app/Contents/Info.plist")
+
+    rm -rf dist && mkdir -p dist/stage
+    cp -R "$DERIVED/Build/Products/Release/$APP_NAME.app" "dist/stage/Clipd.app"
+    # The symlink is what makes the window a drag-and-drop installer.
+    ln -s /Applications "dist/stage/Applications"
+
+    hdiutil create -volname "Clipd $VERSION" -srcfolder dist/stage \
+                   -ov -format UDZO "dist/Clipd-$VERSION.dmg" >/dev/null
+    echo "built dist/Clipd-$VERSION.dmg"
+    echo ""
+    echo "NOTE: signed with an Apple Development certificate, which cannot be"
+    echo "notarised on a free account. On another Mac, Gatekeeper will refuse to"
+    echo "open it until quarantine is cleared:"
+    echo "  xattr -dr com.apple.quarantine /Applications/Clipd.app"
+    codesign -dv --verbose=2 "dist/stage/Clipd.app" 2>&1 | grep -E '^(Identifier|Signature)'
+    ;;
   sig)
     # The A9 check. The designated requirement must contain identifier and
     # certificate, and must NOT contain a cdhash. If it does, rebuilds will
@@ -71,7 +99,7 @@ case "${1:-}" in
     echo "Accessibility reset. Relaunch and grant again."
     ;;
   *)
-    echo "usage: ./app {up|test|sig|trust}"
+    echo "usage: ./app {up|test|dmg|sig|trust}"
     exit 1
     ;;
 esac

@@ -28,6 +28,10 @@ targets:
       path: ClipdMac/Info.plist
       properties:
         CFBundleName: Clipd
+        # Set explicitly. Without it XcodeGen's generated plist defaults to 1.0,
+        # so the DMG filename disagreed with the version the app reports.
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
         # Menu bar only. No Dock icon, no main window on launch.
         LSUIElement: true
     settings:
