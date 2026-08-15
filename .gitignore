@@ -1,0 +1,12 @@
+.build/
+.swiftpm/
+*.xcodeproj/
+ClipdMac/Info.plist
+DerivedData/
+.DS_Store
+
+# Signing identity. Not secret, but machine specific, so it stays out of git.
+.app-signing
+
+# Local development only. Never commit credentials.
+.env.local

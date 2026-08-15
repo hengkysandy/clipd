@@ -1,0 +1,57 @@
+name: ClipdMac
+options:
+  deploymentTarget: { macOS: "15.0" }
+  createIntermediateGroups: true
+
+packages:
+  ClipdCore:
+    path: .                     # the SwiftPM package in this same folder
+
+targets:
+  ClipdMac:
+    type: application
+    platform: macOS
+    sources: [ClipdMac]
+    dependencies:
+      - package: ClipdCore
+        product: ClipdCore
+    info:
+      path: ClipdMac/Info.plist
+      properties:
+        CFBundleName: Clipd
+        # Menu bar only. No Dock icon, no main window on launch.
+        LSUIElement: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hengkysandy.clipd.mac
+        SWIFT_VERSION: "6.0"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        # Ad-hoc signing is NOT the default here, unlike the usual advice.
+        # Measured: under ad-hoc the CDHash changes on every build and macOS
+        # drops the Accessibility permission with it, after which the app
+        # looks perfectly healthy and pastes nothing at all. A real
+        # certificate gives a designated requirement of identifier plus
+        # certificate, with no CDHash in it, which survives rebuilds.
+        # The ./app script injects the identity; these are only fallbacks.
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+
+  ClipdMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [ClipdMacTests]
+    dependencies: [target: ClipdMac]
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        # No `info:` block above, so XcodeGen has no plist path to generate.
+        # Without this, code signing the test bundle fails.
+        GENERATE_INFOPLIST_FILE: "YES"
+
+schemes:
+  ClipdMac:
+    build: { targets: { ClipdMac: all } }
+    test: { targets: [ClipdMacTests] }
+    run: { config: Debug }
