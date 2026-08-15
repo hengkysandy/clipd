@@ -82,3 +82,20 @@ func returnsAllExpired() {
     let expired = Set(itemsToExpire([a, b, c], policy: .day, pinned: [], now: now))
     #expect(expired == Set([a.id, b.id]))
 }
+
+@Test("Three and six month policies use the ages you would expect")
+func quarterAndHalfYearPolicies() {
+    #expect(itemsToExpire([aged(day * 89)], policy: .threeMonths, pinned: [], now: now).isEmpty)
+    #expect(itemsToExpire([aged(day * 91)], policy: .threeMonths, pinned: [], now: now).count == 1)
+    #expect(itemsToExpire([aged(day * 179)], policy: .sixMonths, pinned: [], now: now).isEmpty)
+    #expect(itemsToExpire([aged(day * 181)], policy: .sixMonths, pinned: [], now: now).count == 1)
+}
+
+@Test("The policy order runs shortest to longest, which the slider depends on")
+func policiesAreOrderedByDuration() {
+    // The General pane maps slider positions straight onto allCases, so an
+    // out of order case would make the slider jump backwards in time.
+    let ages = RetentionPolicy.allCases.compactMap(\.maxAge)
+    #expect(ages == ages.sorted())
+    #expect(RetentionPolicy.allCases.last == .forever)
+}

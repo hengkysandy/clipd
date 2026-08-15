@@ -18,7 +18,7 @@ final class GeneralPane: NSViewController {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 300))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: 300))
 
         let launch = NSButton(checkboxWithTitle: "Open at login",
                               target: self, action: #selector(toggleLaunchAtLogin(_:)))
@@ -37,34 +37,47 @@ final class GeneralPane: NSViewController {
                               minValue: 0,
                               maxValue: Double(RetentionPolicy.allCases.count - 1),
                               target: self, action: #selector(retentionChanged(_:)))
-        slider.frame = NSRect(x: 24, y: 168, width: 412, height: 24)
+        slider.frame = NSRect(x: 24, y: 168, width: 512, height: 24)
         slider.numberOfTickMarks = RetentionPolicy.allCases.count
         slider.allowsTickMarkValuesOnly = true
         root.addSubview(slider)
 
-        let stops = NSTextField(labelWithString:
-            RetentionPolicy.allCases.map(\.label).joined(separator: "     "))
-        stops.frame = NSRect(x: 24, y: 146, width: 412, height: 16)
-        stops.font = .systemFont(ofSize: 10)
-        stops.textColor = .secondaryLabelColor
-        root.addSubview(stops)
+        // One label per tick, centred on its own tick.
+        //
+        // Rejected: a single string with padding between the words, which is
+        // what this was. The words have different widths, so "Day" and
+        // "Forever" drifted away from the ticks they name.
+        let count = RetentionPolicy.allCases.count
+        let usable = slider.frame.width - 20   // the knob inset at each end
+        for (offset, policy) in RetentionPolicy.allCases.enumerated() {
+            let centre = slider.frame.minX + 10
+                + usable * CGFloat(offset) / CGFloat(count - 1)
+            let label = NSTextField(labelWithString: policy.label)
+            label.font = .systemFont(ofSize: 9)
+            label.textColor = .secondaryLabelColor
+            label.alignment = .center
+            label.sizeToFit()
+            label.frame = NSRect(x: centre - label.frame.width / 2, y: 146,
+                                 width: label.frame.width, height: 14)
+            root.addSubview(label)
+        }
 
         retentionLabel = NSTextField(labelWithString: describe(settings.retention))
-        retentionLabel.frame = NSRect(x: 24, y: 114, width: 412, height: 18)
+        retentionLabel.frame = NSRect(x: 24, y: 110, width: 512, height: 18)
         retentionLabel.font = .systemFont(ofSize: 11)
         retentionLabel.textColor = .secondaryLabelColor
         root.addSubview(retentionLabel)
 
         let erase = NSButton(title: "Erase History...", target: self,
                              action: #selector(eraseHistory))
-        erase.frame = NSRect(x: 300, y: 20, width: 136, height: 28)
+        erase.frame = NSRect(x: 400, y: 20, width: 136, height: 28)
         erase.bezelStyle = .rounded
         root.addSubview(erase)
 
         // Without this the tab controller stretches the pane to fill an
         // oversized window and the content sinks to the bottom, because these
         // subviews are laid out from the bottom edge.
-        preferredContentSize = NSSize(width: 460, height: 300)
+        preferredContentSize = NSSize(width: 560, height: 300)
         for sub in root.subviews { sub.autoresizingMask = [.minYMargin] }
         view = root
     }
@@ -74,9 +87,15 @@ final class GeneralPane: NSViewController {
     }
 
     private func describe(_ policy: RetentionPolicy) -> String {
-        policy == .forever
-            ? "Nothing is deleted automatically."
-            : "Items older than one \(policy.label.lowercased()) are removed automatically. Pinned items are kept."
+        switch policy {
+        case .forever:
+            return "Nothing is deleted automatically."
+        case .threeMonths, .sixMonths:
+            // "older than one 3 months" reads badly, so drop the article.
+            return "Items older than \(policy.label.lowercased()) are removed automatically. Pinned items are kept."
+        default:
+            return "Items older than one \(policy.label.lowercased()) are removed automatically. Pinned items are kept."
+        }
     }
 
     @objc private func retentionChanged(_ sender: NSSlider) {

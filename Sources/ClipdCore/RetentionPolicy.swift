@@ -4,6 +4,8 @@ public enum RetentionPolicy: String, CaseIterable, Equatable, Sendable {
     case day
     case week
     case month
+    case threeMonths
+    case sixMonths
     case year
     case forever
 
@@ -12,6 +14,8 @@ public enum RetentionPolicy: String, CaseIterable, Equatable, Sendable {
         case .day: return "Day"
         case .week: return "Week"
         case .month: return "Month"
+        case .threeMonths: return "3 Months"
+        case .sixMonths: return "6 Months"
         case .year: return "Year"
         case .forever: return "Forever"
         }
@@ -28,6 +32,8 @@ public enum RetentionPolicy: String, CaseIterable, Equatable, Sendable {
         case .day: return day
         case .week: return 7 * day
         case .month: return 30 * day
+        case .threeMonths: return 90 * day
+        case .sixMonths: return 180 * day
         case .year: return 365 * day
         case .forever: return nil
         }

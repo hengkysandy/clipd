@@ -150,11 +150,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
-        for item in history.items.prefix(5) {
-            menu.addItem(NSMenuItem(title: String(item.preview.prefix(50)),
-                                    action: nil, keyEquivalent: ""))
-        }
-        menu.addItem(.separator())
+        // Deliberately no clipboard preview here.
+        //
+        // It put the last five things you copied on screen every time you
+        // opened this menu, including during screen sharing, for no benefit:
+        // the entries were not clickable and the panel is one keystroke away.
+        // The count above is enough to show the app is working.
 
         // Pause. This is a privacy control, not a convenience: you pause it
         // before handling something you do not want recorded at all.

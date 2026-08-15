@@ -22,6 +22,15 @@ final class SettingsWindowController: NSWindowController {
         tabs.addChild(PrivacyPane(settings: settings))
         tabs.addChild(SyncPane(settings: settings, lastSync: lastSync, onSyncNow: onSyncNow))
 
+        // The icon lives on the tab view ITEM, not on the view controller.
+        // NSViewController has no image property, and without one the toolbar
+        // draws an empty box above every label.
+        let symbols = ["gearshape", "hand.raised", "arrow.triangle.2.circlepath"]
+        for (item, symbol) in zip(tabs.tabViewItems, symbols) {
+            item.image = NSImage(systemSymbolName: symbol,
+                                 accessibilityDescription: item.label)
+        }
+
         let window = NSWindow(contentViewController: tabs)
         window.title = "Clipd Settings"
         window.styleMask = [.titled, .closable]
