@@ -723,7 +723,12 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         let cell = collectionView.makeItem(withIdentifier: CardItem.identifier,
                                            for: indexPath)
         if let card = cell as? CardItem, indexPath.item < results.count {
-            card.configure(with: results[indexPath.item], index: indexPath.item)
+            let item = results[indexPath.item]
+            // Board order, so a card's colour is stable rather than depending
+            // on dictionary iteration order.
+            let colors = boards.filter { (membership[$0.id] ?? []).contains(item.id) }
+                               .map(\.colorName)
+            card.configure(with: item, index: indexPath.item, boardColors: colors)
             card.onClick = { [weak self] index, clicks in
                 self?.handleCardClick(index: index, clickCount: clicks)
             }

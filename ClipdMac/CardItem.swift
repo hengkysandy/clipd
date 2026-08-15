@@ -75,6 +75,9 @@ final class CardItem: NSCollectionViewItem {
     private var card: NSView!
 
     private var itemKind: ItemKind = .text
+    /// The colours of every board this item is filed on, in board order.
+    private var boardColors: [String] = []
+    private var boardDots: [NSView] = []
     private var index: Int = 0
 
     /// Called with (index, clickCount). One click selects, two activates.
@@ -181,8 +184,9 @@ final class CardItem: NSCollectionViewItem {
         return relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
 
-    func configure(with item: HistoryItem, index: Int) {
+    func configure(with item: HistoryItem, index: Int, boardColors: [String] = []) {
         self.index = index
+        self.boardColors = boardColors
         itemKind = item.kind
         switch item.kind {
         case .link:  kindLabel.stringValue = "Link"
@@ -207,6 +211,7 @@ final class CardItem: NSCollectionViewItem {
             countLabel.stringValue = "\(item.text.count) characters"
         }
         indexLabel.stringValue = "\(index + 1)"
+        rebuildBoardDots()
         applySelection()
     }
 
@@ -214,16 +219,50 @@ final class CardItem: NSCollectionViewItem {
         didSet { applySelection() }
     }
 
+    /// A dot per board beyond the first, so an item on three boards says so.
+    ///
+    /// The first board's colour is the header itself, so it needs no dot.
+    private func rebuildBoardDots() {
+        boardDots.forEach { $0.removeFromSuperview() }
+        boardDots = []
+        guard boardColors.count > 1 else { return }
+        var x = CardItem.size.width - 62
+        for name in boardColors.dropFirst().prefix(3) {
+            let size: CGFloat = 8
+            let dot = NSView(frame: NSRect(x: x, y: 8, width: size, height: size))
+            dot.wantsLayer = true
+            dot.layer?.cornerRadius = size / 2
+            dot.layer?.backgroundColor = BoardTabsView.color(named: name).cgColor
+            dot.layer?.borderWidth = 1
+            dot.layer?.borderColor = NSColor(calibratedWhite: 0, alpha: 0.25).cgColor
+            header.addSubview(dot)
+            boardDots.append(dot)
+            x -= size + 4
+        }
+    }
+
     private func applySelection() {
         guard card != nil else { return }
-        // Link headers are blue, text headers are neutral, and the selected
-        // card is blue whatever its kind. This matches the reference app:
-        // in its screenshot a selected Text card and an unselected Link card
-        // are both blue, and unselected Text cards are grey.
         let blue = NSColor.controlAccentColor
         let neutral = NSColor(calibratedWhite: 0.22, alpha: 1)
-        header.layer?.backgroundColor = (isSelected || itemKind == .link)
-            ? blue.cgColor : neutral.cgColor
+
+        // A pinned card wears its board's colour, so you can see what is filed
+        // where without switching tabs. The board colour outranks the selection
+        // blue; selection is carried by the border instead, which stays legible
+        // on any header colour.
+        let boardColor = boardColors.first.map { BoardTabsView.color(named: $0) }
+        header.layer?.backgroundColor = (boardColor
+            ?? ((isSelected || itemKind == .link) ? blue : neutral)).cgColor
+
+        // The body gets a faint wash of the same colour rather than the full
+        // shade. A fully coloured body would make the text on it hard to read,
+        // which is the whole point of the card.
+        let base = NSColor(calibratedWhite: 0.13, alpha: 1)
+        card.layer?.backgroundColor = (boardColor?.withAlphaComponent(0.14) ?? base).cgColor
+
+        // A thicker border when selected, because the header can no longer
+        // carry that signal on a pinned card.
         card.layer?.borderColor = isSelected ? blue.cgColor : NSColor.clear.cgColor
+        card.layer?.borderWidth = isSelected ? 3 : 0
     }
 }
