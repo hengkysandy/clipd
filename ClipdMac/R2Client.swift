@@ -58,24 +58,121 @@ actor R2Client {
         }
     }
 
-    /// Every key under a prefix, following continuation tokens.
-    func list(prefix: String) async throws -> [String] {
-        var keys: [String] = []
-        var token: String?
-        repeat {
-            var parts = ["list-type=2", "max-keys=1000", "prefix=\(Self.encode(prefix))"]
-            if let token { parts.append("continuation-token=\(Self.encode(token))") }
-            // Query parameters must be sorted by name for the canonical request.
-            let query = parts.sorted().joined(separator: "&")
-
+    /// Every key under a prefix, following continuation tokens to the end.
+    ///
+    /// S3 and R2 cap a single ListObjectsV2 response at 1000 keys. Without the
+    /// loop the prune step stops seeing most of the bucket past that point and
+    /// never throws, so the bucket grows forever and nothing looks wrong.
+    ///
+    /// `pageSize` exists only so a test can force real continuation tokens out
+    /// of the server without writing 1001 objects. Callers leave it alone.
+    func list(prefix: String, pageSize: Int = 1000) async throws -> [String] {
+        try await Self.collectKeys { [self] token in
+            let query = Self.listQuery(prefix: prefix, pageSize: pageSize,
+                                       continuationToken: token)
             let (status, data) = try await send("GET", key: "", query: query,
                                                 body: Data(), extra: [:])
             guard status == 200 else { throw R2Error.http(status, "LIST \(prefix)") }
-            let xml = String(decoding: data, as: UTF8.self)
-            keys.append(contentsOf: Self.extract(xml, tag: "Key"))
-            token = Self.extract(xml, tag: "NextContinuationToken").first
-        } while token != nil
+            return Self.parseListPage(String(decoding: data, as: UTF8.self))
+        }
+    }
+
+    // MARK: - Listing, split out so it can be tested without a network call
+
+    /// One ListObjectsV2 response, reduced to the three things the loop needs.
+    struct ListPage: Equatable, Sendable {
+        var keys: [String] = []
+        var isTruncated: Bool = false
+        var nextToken: String?
+    }
+
+    /// The canonical query string for one page of a listing.
+    ///
+    /// Two rules matter here and both have bitten this project. Parameters are
+    /// sorted by name, because SigV4 signs them sorted. And every value is
+    /// percent encoded exactly once, by `encode`, before it reaches either the
+    /// signer or the URL. A continuation token is base64, so it routinely holds
+    /// `/`, `+` and `=`, which must become `%2F`, `%2B` and `%3D`. Encoding it
+    /// twice, or not at all, produces SignatureDoesNotMatch, which reads like a
+    /// bad key rather than a bad string.
+    static func listQuery(prefix: String, pageSize: Int = 1000,
+                          continuationToken: String?) -> String {
+        var pairs = [("list-type", "2"), ("max-keys", String(pageSize)), ("prefix", prefix)]
+        if let continuationToken, !continuationToken.isEmpty {
+            pairs.append(("continuation-token", continuationToken))
+        }
+        // Sort on the name alone. Sorting the joined strings happens to give the
+        // same answer for these four names, but it would quietly stop doing so
+        // if a name ever became a prefix of another name.
+        return pairs.sorted { $0.0 < $1.0 }
+            .map { "\($0.0)=\(encode($0.1))" }
+            .joined(separator: "&")
+    }
+
+    /// Pulls the keys, the truncation flag and the next token out of the XML.
+    ///
+    /// Rejected: XMLParser. This response has three fields worth reading and a
+    /// delegate based parser would be more code than the scan below. `<Key>` is
+    /// matched with its angle brackets, so `<KeyCount>` cannot be mistaken for
+    /// it.
+    static func parseListPage(_ xml: String) -> ListPage {
+        var page = ListPage()
+        page.keys = extract(xml, tag: "Key").map(unescapeXML)
+        // A missing IsTruncated means false. S3 always sends it, but treating
+        // absence as "there is more" would turn a malformed response into an
+        // endless loop.
+        page.isTruncated = extract(xml, tag: "IsTruncated")
+            .first?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "true"
+        // The token is base64 in practice, but it is still XML text, so it goes
+        // through the same unescaping as the keys.
+        let token = extract(xml, tag: "NextContinuationToken").first.map(unescapeXML)
+        page.nextToken = (token?.isEmpty == false) ? token : nil
+        return page
+    }
+
+    /// Walks pages until the server says there are no more.
+    ///
+    /// Kept separate from `list` so the stopping rules can be tested against a
+    /// fake page source. Every stop is a break rather than a throw: the two
+    /// callers, the manifest loop and the prune step, only ever skip work when
+    /// the list is short. Neither of them deletes anything because a key is
+    /// missing, so a partial list is safe in this direction, while a throw
+    /// would abort a sync pass that was otherwise fine.
+    static func collectKeys(
+        maxPages: Int = 10_000,
+        fetch: @Sendable (String?) async throws -> ListPage
+    ) async rethrows -> [String] {
+        var keys: [String] = []
+        var token: String?
+        var seen = Set<String>()
+
+        for _ in 0..<maxPages {
+            let page = try await fetch(token)
+            keys.append(contentsOf: page.keys)
+
+            guard page.isTruncated else { break }
+            // Truncated with no token: there is no way to ask for the rest, so
+            // repeating the same request would just fetch page one forever.
+            guard let next = page.nextToken else { break }
+            // A repeated token means the server is cycling. Same reasoning: the
+            // next request would return a page we already have.
+            guard seen.insert(next).inserted else { break }
+            token = next
+        }
         return keys
+    }
+
+    /// The five predefined XML entities. `&amp;` is last on purpose, otherwise
+    /// a literal `&amp;lt;` in a key would be unescaped twice.
+    private static func unescapeXML(_ value: String) -> String {
+        guard value.contains("&") else { return value }
+        var out = value
+        for (entity, character) in [("&lt;", "<"), ("&gt;", ">"),
+                                    ("&quot;", "\""), ("&apos;", "'"), ("&amp;", "&")] {
+            out = out.replacingOccurrences(of: entity, with: character)
+        }
+        return out
     }
 
     // MARK: - Plumbing

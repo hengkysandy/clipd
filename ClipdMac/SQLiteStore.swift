@@ -32,15 +32,30 @@ final class SQLiteStore {
     /// Newest first, tombstones excluded.
     func loadAll(limit: Int) throws -> [HistoryItem] {
         let rows = try db.query("""
-            SELECT id, kind, created_at, source_bundle, source_name, source_url,
-                   content_hash, text_content, preview, px_width, px_height, blob_ref
+            SELECT \(Self.itemColumns)
             FROM items
             WHERE deleted_at IS NULL
             ORDER BY created_at DESC
             LIMIT ?
             """, [.int(Int64(limit))])
 
-        return rows.compactMap { row -> HistoryItem? in
+        return items(from: rows)
+    }
+
+    /// The columns every item query must select, so the row mapper always finds
+    /// what it needs. One constant rather than the same list typed twice,
+    /// because a column added in one place and missed in the other would show
+    /// up as items silently disappearing from search only.
+    private static let itemColumns = """
+        id, kind, created_at, source_bundle, source_name, source_url,
+        content_hash, text_content, preview, px_width, px_height, blob_ref
+        """
+
+    /// Rows to items. Shared by `loadAll` and `search` on purpose: an item found
+    /// by search must come back with the same image, preview and source app as
+    /// the same item shown in the list.
+    private func items(from rows: [[String: SQLValue]]) -> [HistoryItem] {
+        rows.compactMap { row -> HistoryItem? in
             guard case .text(let idString)? = row["id"], let id = UUID(uuidString: idString),
                   case .text(let kind)? = row["kind"],
                   case .int(let created)? = row["created_at"] else { return nil }
@@ -64,6 +79,109 @@ final class SQLiteStore {
             return HistoryItem(id: id, text: text, sourceBundleID: bundle,
                                sourceName: name, createdAt: createdAt)
         }
+    }
+
+    // MARK: - Search
+
+    /// Full text search over the WHOLE history, newest first, tombstones out.
+    ///
+    /// Why this exists: the panel filtered the newest 500 rows it happened to
+    /// be holding in memory. With retention set to six months or a year a user
+    /// has far more items than that, and everything older was simply not
+    /// findable. The FTS5 index is already written on every insert and every
+    /// delete, so nothing here costs anything that was not already being paid.
+    ///
+    /// Newest first, never by relevance. A clipboard history is a timeline, and
+    /// ranking buries the thing you copied 30 seconds ago under an older but
+    /// better scoring match. This is the same rule `History.search` follows.
+    ///
+    /// Returns an empty array, and never throws, when the index cannot answer.
+    /// See the catch below for why.
+    func search(_ query: String, limit: Int) throws -> [HistoryItem] {
+        let phrases = Self.matchPhrases(for: query)
+        // Nothing searchable was typed, so nothing matches. Rejected: returning
+        // the whole history, which is what `History.search` does for an empty
+        // query. It is right there because the panel calls it with an empty
+        // field to mean "no filter". Here it would be wrong: a query of ":::"
+        // is a filter the user typed, and answering it with every item they
+        // ever copied looks like search quietly gave up.
+        guard !phrases.isEmpty else { return [] }
+        // A space between two phrases already means AND in FTS5. Writing AND
+        // out is the same query and does not rely on that default.
+        let match = phrases.joined(separator: " AND ")
+
+        let rows: [[String: SQLValue]]
+        do {
+            // The index only narrows the rowids. Every value shown to the user
+            // still comes from `items`, so a stale index entry can at worst let
+            // a row through or hold one back. It can never put wrong text on a
+            // card. Rejected: selecting the text out of `items_fts` itself,
+            // which would show whatever the index happened to hold.
+            //
+            // `rowid IN (subquery)` rather than a join, because FTS5 only
+            // accepts MATCH against the table name, not against an alias, and
+            // the unaliased join form reads worse for no gain.
+            rows = try db.query("""
+                SELECT \(Self.itemColumns)
+                FROM items
+                WHERE rowid IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)
+                  AND deleted_at IS NULL
+                ORDER BY created_at DESC
+                LIMIT ?
+                """, [.text(match), .int(Int64(limit))])
+        } catch {
+            // A damaged or out of date index must not take the panel down. This
+            // project has already seen SQLite report "database disk image is
+            // malformed" from an FTS5 misuse, and that happened on a keystroke
+            // path: the user is typing, and every character runs this again.
+            // An empty result list is a bad search. A thrown error mid-typing
+            // is a broken app.
+            //
+            // The SQLite message is deliberately NOT logged. FTS5 syntax errors
+            // quote the offending text back at you, and that text is whatever
+            // the user pasted into the search field. The count of phrases is
+            // enough to tell a syntax problem from a corrupt index.
+            Diag.panel.error("search failed, returning no results, phrases \(phrases.count, privacy: .public)")
+            return []
+        }
+        return items(from: rows)
+    }
+
+    /// Turns raw text typed by a user into a list of FTS5 phrases, one per
+    /// token. Empty when nothing searchable is left.
+    ///
+    /// This is the part that has to be right. MATCH takes a query language, not
+    /// a search string. A double quote, `*`, `-`, `^`, `:`, a bracket, or the
+    /// bare words AND, OR, NOT and NEAR all mean something inside it. Clipboard
+    /// text is full of those, so a query pasted from a shell command would
+    /// either throw a syntax error or quietly search for something the user
+    /// never asked for.
+    ///
+    /// So every token is wrapped as an FTS5 string literal. Inside a literal
+    /// the double quote is the only special character, and doubling it escapes
+    /// it. Everything else is handed to the tokeniser as plain text. The
+    /// expression itself is then bound as a parameter, like every other
+    /// statement in this file. Raw user text never reaches the SQL.
+    ///
+    /// The `*` sits OUTSIDE the closing quote on purpose. There it is the
+    /// prefix operator, so typing "doc" finds "docker", the way the old
+    /// in-memory substring scan did. Inside the quotes it would be a literal
+    /// asterisk, which the tokeniser drops, and prefix matching would be lost.
+    ///
+    /// Rejected: stripping the special characters out of each token. That
+    /// rewrites the query behind the user's back ("a-b" becomes "ab") and still
+    /// leaves a bare AND or NEAR working as an operator.
+    ///
+    /// A token with no letter and no digit is dropped. The tokeniser produces
+    /// no terms from one, and an empty phrase ANDed with the rest matches
+    /// nothing at all, so keeping it would turn "docker :" into a search that
+    /// can never hit anything.
+    private static func matchPhrases(for query: String) -> [String] {
+        query.split(whereSeparator: { $0.isWhitespace })
+            .filter { token in token.contains(where: { $0.isLetter || $0.isNumber }) }
+            .map { token in
+                "\"" + token.replacingOccurrences(of: "\"", with: "\"\"") + "\"*"
+            }
     }
 
     func insert(_ item: HistoryItem) throws {
@@ -209,8 +327,26 @@ final class SQLiteStore {
     /// The four bytes every v2 and later payload starts with. ASCII "CLPD".
     static let payloadMagic = Data([0x43, 0x4C, 0x50, 0x44])
 
-    /// The version this build writes. Readers accept this and below.
+    /// The newest version this build can READ. Readers accept this and below.
     static let currentPayloadVersion: UInt8 = 2
+
+    /// Whether this build WRITES the framed v2 format. Deliberately false.
+    ///
+    /// A format change has to ship in two steps: readers first, writers later.
+    /// This build reads v0, v1 and v2, and keeps writing v1, so a Mac still on
+    /// 0.3.0 can read everything this one uploads.
+    ///
+    /// This is not caution for its own sake. It was checked against the real
+    /// 0.3.0 parser: it reads the "CLPD" magic as a 4 byte length, gets about
+    /// 1.07 GB, fails its own bounds check and RETURNS. No throw, no log, no
+    /// crash. Every item written by a v2 writer would silently never arrive on
+    /// the older Mac, while sync went on reporting success. A silent failure
+    /// that looks exactly like a working sync is the worst shape a bug can have.
+    ///
+    /// Flip this to true once both Macs have run a build with the v2 reader for
+    /// long enough to be sure neither will be rolled back. It is a one line
+    /// change and every v2 test already covers the reader.
+    static let writesFramedPayload = false
 
     /// Reads any of the three payload shapes and returns the JSON metadata plus
     /// the raw image bytes, if the payload carried any.
@@ -344,8 +480,12 @@ final class SQLiteStore {
         let meta = try JSONSerialization.data(withJSONObject: json)
 
         var out = Data()
-        out.append(Self.payloadMagic)
-        out.append(Self.currentPayloadVersion)
+        // v1 framing today, v2 framing when the flag flips. See
+        // `writesFramedPayload` for why this build still writes the old shape.
+        if Self.writesFramedPayload {
+            out.append(Self.payloadMagic)
+            out.append(Self.currentPayloadVersion)
+        }
         // Big endian because it is the usual wire order, so a future non-Mac
         // reader does not need to know how this machine stores integers.
         var header = UInt32(meta.count).bigEndian

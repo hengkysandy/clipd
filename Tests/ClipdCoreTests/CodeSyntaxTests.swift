@@ -514,3 +514,68 @@ func storedFieldsAreUnchanged() {
     #expect(it.preview.count <= 200)
     #expect(it.contentHash == swiftSample)
 }
+
+// MARK: - YAML against Markdown
+//
+// A `#` line is a heading in Markdown and a comment in YAML, so a config file
+// that opens with comments fires both detectors. This was found in the running
+// app, not in a test: a commented Kubernetes manifest was labelled Markdown.
+
+@Test("A YAML manifest that opens with comment lines is YAML, not Markdown")
+func commentedYAMLIsNotMarkdown() {
+    let manifest = """
+    # LOCAL STAND-IN for Amazon RDS
+    # not a backup strategy, see docs
+    apiVersion: apps/v1
+    kind: StatefulSet
+    metadata:
+      name: postgres
+    spec:
+      replicas: 1
+      serviceName: postgres
+    """
+    #expect(detectCodeLanguage(manifest) == .yaml)
+}
+
+@Test("A docker compose file full of comments is still YAML")
+func commentedComposeIsYAML() {
+    let compose = """
+    # development only
+    services:
+      api:
+        image: node:20-alpine
+        # the port the app listens on
+        ports:
+          - "3000:3000"
+    """
+    #expect(detectCodeLanguage(compose) == .yaml)
+}
+
+@Test("Real Markdown is still Markdown, even with a colon line in it")
+func realMarkdownStillWins() {
+    let doc = """
+    # Release notes
+
+    Version: 0.5.0 is out.
+
+    - syntax colours
+    - see [the repo](https://example.com)
+
+    ```bash
+    brew install clipd
+    ```
+    """
+    #expect(detectCodeLanguage(doc) == .markdown)
+}
+
+@Test("A YAML file with no comments is unaffected by the comparison")
+func plainYAMLUnchanged() {
+    let plain = """
+    services:
+      api:
+        image: node:20-alpine
+        ports:
+          - "3000:3000"
+    """
+    #expect(detectCodeLanguage(plain) == .yaml)
+}

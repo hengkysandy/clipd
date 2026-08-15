@@ -55,12 +55,50 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     private static let topBarHeight: CGFloat = 52
     private static var scrollHeight: CGFloat { panelHeight - topBarHeight - 32 }
 
+    /// The bottom edge of the top bar. Every control in the bar is placed
+    /// against it. It was a local in buildTopBar, and is shared now only
+    /// because the controls are built in one place and added in another.
+    private static var barY: CGFloat { panelHeight - topBarHeight }
+
     private let history: History
-    private var panel: ClipdPanel!
-    private var field: NSTextField!
-    private var banner: NSTextField!
-    private var collection: NSCollectionView!
-    private var scroll: NSScrollView!
+
+    // The seven views below are plain `let`, built before super.init.
+    //
+    // They used to be `var x: T!`. That exact shape has already crashed this
+    // app once: the app delegate held its collaborators as `!`, a sweep running
+    // during launch called back into one that had not been created yet, and the
+    // app died on launch for anyone whose history had duplicates. Nothing here
+    // reads a view before build() fills it in today, but one reordered line
+    // inside build() would be the same crash, and the compiler would say
+    // nothing either time.
+    //
+    // As `let` the compiler proves each one non-nil, so the order inside
+    // build() stops being load bearing.
+    //
+    // Rejected: `lazy var x = makeX()`. It also proves non-nil, but it carries
+    // its own trap: a callback that fires while a lazy property is still
+    // running its initialiser re-enters that property. It is not needed here,
+    // because nothing needs `self` at construction time. Every reference to
+    // self (the field delegate, the collection data source and delegate, the
+    // tab closures, the panel key handlers) is a property set on an
+    // already-built view, so all of that wiring stays in build() where it was.
+    //
+    // Rejected: `var x: T?` plus a force unwrap at each use. That is the same
+    // crash spread over more lines. Rejected too: `guard let` in the view code,
+    // which would open the panel with no search field and log nothing, which is
+    // worse than a crash because nobody would ever hear about it.
+    private let panel: ClipdPanel
+    private let field: NSTextField
+    private let banner: NSTextField
+    private let collection: NSCollectionView
+    private let scroll: NSScrollView
+    private let emptyLabel: NSTextField
+    private let tabs: BoardTabsView
+
+    /// The width the views were built at. show() resizes the panel to the real
+    /// screen on every open, so this is only a starting size.
+    private let initialWidth: CGFloat
+
     private var results: [HistoryItem] = []
     private var selection: Int = 0
     private var isDismissing = false
@@ -71,8 +109,6 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     /// into whatever app was behind. Click-away must still close the panel, so
     /// the flag is narrower than disabling the handler.
     private var isPresentingModal = false
-    private var emptyLabel: NSTextField!
-    private var tabs: BoardTabsView!
     private var boards: [Pinboard] = []
     private var membership: [UUID: Set<UUID>] = [:]
     private var selectedBoard: UUID?
@@ -84,6 +120,11 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     var onRenameBoard: ((UUID, String) -> Void)?
     var onToggleMembership: ((UUID, UUID) -> Void)?
 
+    /// Full text search across the whole stored history, not just what the panel
+    /// holds in memory. Nil until the app wires it, and nil is safe: the panel
+    /// then behaves exactly as it did before, searching the loaded items.
+    var searchProvider: ((String) -> [HistoryItem])?
+
     /// The app that was frontmost when the panel opened. Everything depends on
     /// putting it back before pasting.
     private(set) var previousApp: NSRunningApplication?
@@ -92,19 +133,53 @@ final class PanelController: NSObject, NSTextFieldDelegate,
 
     init(history: History) {
         self.history = history
+        // Read the screen once and build every frame from that one number.
+        // Reading it per view could hand out two different widths if a display
+        // is attached or removed between the calls.
+        let width = PanelController.startingWidth()
+        initialWidth = width
+        // Creation order is the same order build() used to create them in, so
+        // the frames and the sizes are unchanged. It is no longer load bearing
+        // for safety, only for reading: scroll needs collection, and emptyLabel
+        // is centred on scroll's frame.
+        panel = PanelController.makePanel(width: width)
+        field = PanelController.makeField()
+        tabs = PanelController.makeTabs(width: width)
+        banner = PanelController.makeBanner(width: width)
+        collection = PanelController.makeCollection()
+        scroll = PanelController.makeScroll(width: width, document: collection)
+        emptyLabel = PanelController.makeEmptyLabel(width: width,
+                                                    centeredOn: scroll.frame)
         super.init()
         build()
     }
 
-    // MARK: - Build
+    // MARK: - View makers
+    //
+    // These are static on purpose. A static function cannot touch `self`, so
+    // the compiler enforces that nothing here can call back into a
+    // half-built controller. Everything that does need self stays in build().
 
-    private func build() {
-        let screenWidth = NSScreen.main?.frame.width ?? 1440
-        let rect = NSRect(x: 0, y: 0, width: screenWidth, height: Self.panelHeight)
+    /// The width to build at.
+    ///
+    /// NSScreen.main is nil when the machine has no display awake, which is a
+    /// real state for a menu bar app that starts at login. 1440 is the number
+    /// this code has always fallen back to, so it stays. A wrong guess costs
+    /// nothing visible: show() calls onscreenFrame() and resizes the panel to
+    /// the real screen before it is ever seen, and the subviews that care about
+    /// width (the banner and the empty label) are only ever shown after that.
+    ///
+    /// Rejected: refusing to build the panel when there is no screen. That
+    /// needs the views back as optionals, which is the shape being removed.
+    private static func startingWidth() -> CGFloat {
+        NSScreen.main?.frame.width ?? 1440
+    }
 
-        panel = ClipdPanel(contentRect: rect,
-                           styleMask: [.nonactivatingPanel, .borderless],
-                           backing: .buffered, defer: false)
+    private static func makePanel(width: CGFloat) -> ClipdPanel {
+        let rect = NSRect(x: 0, y: 0, width: width, height: panelHeight)
+        let panel = ClipdPanel(contentRect: rect,
+                               styleMask: [.nonactivatingPanel, .borderless],
+                               backing: .buffered, defer: false)
         // .screenSaver so it appears above a fullscreen app and above the Dock.
         panel.level = .screenSaver
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
@@ -112,6 +187,98 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
+        return panel
+    }
+
+    private static func makeField() -> NSTextField {
+        let field = NSTextField(frame: NSRect(x: 50, y: barY + 12,
+                                              width: 420, height: 26))
+        field.placeholderString = "Search clipboard history"
+        field.font = .systemFont(ofSize: 14)
+        field.focusRingType = .none
+        field.isBordered = false
+        field.drawsBackground = false
+        field.textColor = .white
+        return field
+    }
+
+    private static func makeTabs(width: CGFloat) -> BoardTabsView {
+        BoardTabsView(frame: NSRect(x: 490, y: barY + 11,
+                                    width: max(width - 520, 200), height: 30))
+    }
+
+    /// The loud failure. Without Accessibility, macOS discards every
+    /// synthesised event and reports nothing, so the app would otherwise look
+    /// perfectly healthy while pasting nothing.
+    private static func makeBanner(width: CGFloat) -> NSTextField {
+        let banner = NSTextField(labelWithString: "")
+        banner.frame = NSRect(x: 22, y: barY + 10, width: width - 44, height: 30)
+        banner.font = .boldSystemFont(ofSize: 13)
+        banner.textColor = .white
+        banner.backgroundColor = .systemOrange
+        banner.drawsBackground = true
+        banner.alignment = .center
+        banner.isHidden = true
+        return banner
+    }
+
+    private static func makeCollection() -> NSCollectionView {
+        let layout = NSCollectionViewFlowLayout()
+        // Horizontal, so the history reads as a strip you scroll sideways.
+        layout.scrollDirection = .horizontal
+        layout.itemSize = CardItem.size
+        layout.minimumLineSpacing = 12
+        layout.minimumInteritemSpacing = 12
+        layout.sectionInset = NSEdgeInsets(top: 0, left: 22, bottom: 0, right: 22)
+
+        let collection = NonFocusingCollectionView()
+        collection.collectionViewLayout = layout
+        collection.isSelectable = true
+        collection.allowsMultipleSelection = false
+        collection.backgroundColors = [.clear]
+        // Rejected: an NSStackView of cards. Simpler, but it builds every card
+        // up front and the history holds up to 500, which stutters. The
+        // collection view recycles.
+        //
+        // The registration happens here, at construction, so it is done before
+        // the data source is attached in buildCollection and long before any
+        // reload. makeItem with an unregistered identifier throws.
+        collection.register(CardItem.self,
+                            forItemWithIdentifier: CardItem.identifier)
+        return collection
+    }
+
+    private static func makeScroll(width: CGFloat,
+                                   document: NSCollectionView) -> NSScrollView {
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 16, width: width,
+                                                height: scrollHeight))
+        scroll.documentView = document
+        scroll.hasHorizontalScroller = true
+        scroll.hasVerticalScroller = false
+        scroll.drawsBackground = false
+        scroll.autohidesScrollers = true
+        return scroll
+    }
+
+    /// An empty panel with nothing in it reads as broken. Say which of the
+    /// three empty cases it is, because they need different actions from the
+    /// user.
+    private static func makeEmptyLabel(width: CGFloat,
+                                       centeredOn scrollFrame: NSRect) -> NSTextField {
+        let emptyLabel = NSTextField(labelWithString: "")
+        emptyLabel.frame = NSRect(x: 0, y: scrollFrame.midY - 20,
+                                  width: width, height: 40)
+        emptyLabel.alignment = .center
+        emptyLabel.font = .systemFont(ofSize: 13)
+        emptyLabel.textColor = .secondaryLabelColor
+        emptyLabel.isHidden = true
+        return emptyLabel
+    }
+
+    // MARK: - Build
+
+    private func build() {
+        let rect = NSRect(x: 0, y: 0, width: initialWidth, height: Self.panelHeight)
 
         // A blurred material, not flat translucency. Rejected: a plain layer
         // background at 0.96 alpha, which let whatever was behind the panel
@@ -126,8 +293,8 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         // so rounding the bottom would show a sliver of desktop under it.
         content.layer?.maskedCorners = [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
 
-        buildTopBar(in: content, width: screenWidth)
-        buildCollection(in: content, width: screenWidth)
+        buildTopBar(in: content)
+        buildCollection(in: content)
 
         panel.contentView = content
 
@@ -173,27 +340,22 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         dismiss()
     }
 
-    private func buildTopBar(in content: NSVisualEffectView, width: CGFloat) {
-        let barY = Self.panelHeight - Self.topBarHeight
-
-        let glass = NSImageView(frame: NSRect(x: 22, y: barY + 16, width: 18, height: 18))
+    /// Adds the top bar views and does the wiring that needs `self`. The views
+    /// themselves are already built, see the makers above.
+    private func buildTopBar(in content: NSVisualEffectView) {
+        // The magnifying glass is the one view here that is not a stored
+        // property. It is decoration, nothing ever reads it again, so it stays
+        // a local.
+        let glass = NSImageView(frame: NSRect(x: 22, y: Self.barY + 16,
+                                              width: 18, height: 18))
         glass.image = NSImage(systemSymbolName: "magnifyingglass",
                               accessibilityDescription: "Search")
         glass.contentTintColor = NSColor(calibratedWhite: 0.75, alpha: 1)
         content.addSubview(glass)
 
-        field = NSTextField(frame: NSRect(x: 50, y: barY + 12, width: 420, height: 26))
-        field.placeholderString = "Search clipboard history"
-        field.font = .systemFont(ofSize: 14)
         field.delegate = self
-        field.focusRingType = .none
-        field.isBordered = false
-        field.drawsBackground = false
-        field.textColor = .white
         content.addSubview(field)
 
-        tabs = BoardTabsView(frame: NSRect(x: 490, y: barY + 11,
-                                           width: max(width - 520, 200), height: 30))
         tabs.onSelect = { [weak self] id in
             self?.selectedBoard = id
             self?.refreshTabs()
@@ -204,63 +366,18 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         tabs.onRename = { [weak self] id in self?.promptToRenameBoard(id) }
         content.addSubview(tabs)
 
-        // The loud failure. Without Accessibility, macOS discards every
-        // synthesised event and reports nothing, so the app would otherwise
-        // look perfectly healthy while pasting nothing.
-        banner = NSTextField(labelWithString: "")
-        banner.frame = NSRect(x: 22, y: barY + 10, width: width - 44, height: 30)
-        banner.font = .boldSystemFont(ofSize: 13)
-        banner.textColor = .white
-        banner.backgroundColor = .systemOrange
-        banner.drawsBackground = true
-        banner.alignment = .center
-        banner.isHidden = true
         content.addSubview(banner)
     }
 
-    private func buildCollection(in content: NSVisualEffectView, width: CGFloat) {
-        let layout = NSCollectionViewFlowLayout()
-        // Horizontal, so the history reads as a strip you scroll sideways.
-        layout.scrollDirection = .horizontal
-        layout.itemSize = CardItem.size
-        layout.minimumLineSpacing = 12
-        layout.minimumInteritemSpacing = 12
-        layout.sectionInset = NSEdgeInsets(top: 0, left: 22, bottom: 0, right: 22)
-
-        collection = NonFocusingCollectionView()
-        collection.collectionViewLayout = layout
+    /// Adds the card strip and does the wiring that needs `self`.
+    private func buildCollection(in content: NSVisualEffectView) {
+        // The item class was registered in makeCollection, so the data source
+        // can never be asked for a cell it has no registration for.
         collection.dataSource = self
         collection.delegate = self
-        collection.isSelectable = true
-        collection.allowsMultipleSelection = false
-        collection.backgroundColors = [.clear]
-        // Rejected: an NSStackView of cards. Simpler, but it builds every card
-        // up front and the history holds up to 500, which stutters. The
-        // collection view recycles.
-        collection.register(CardItem.self,
-                            forItemWithIdentifier: CardItem.identifier)
 
-        scroll = NSScrollView(frame: NSRect(x: 0, y: 16, width: width,
-                                            height: Self.scrollHeight))
-        scroll.documentView = collection
-        scroll.hasHorizontalScroller = true
-        scroll.hasVerticalScroller = false
-        scroll.drawsBackground = false
-        scroll.autohidesScrollers = true
         content.addSubview(scroll)
-
-        // An empty panel with nothing in it reads as broken. Say which of the
-        // three empty cases it is, because they need different actions from
-        // the user.
-        emptyLabel = NSTextField(labelWithString: "")
-        emptyLabel.frame = NSRect(x: 0, y: scroll.frame.midY - 20,
-                                  width: width, height: 40)
-        emptyLabel.alignment = .center
-        emptyLabel.font = .systemFont(ofSize: 13)
-        emptyLabel.textColor = .secondaryLabelColor
-        emptyLabel.isHidden = true
         content.addSubview(emptyLabel)
-
     }
 
     /// One click selects, two pastes. Clicks arrive from the card itself, not
@@ -379,12 +496,44 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         tabs.update(boards: boards, selected: selectedBoard)
     }
 
-    private func reload() {
-        let all = history.search(field.stringValue)
+    /// The items to show before the board filter is applied.
+    ///
+    /// An empty field means "no filter", so the in-memory timeline is right and
+    /// costs nothing. A real query goes to the store instead, because the panel
+    /// only holds the newest 500 rows: with retention on six months or a year
+    /// everything older was simply not findable, and search silently pretended
+    /// those items did not exist.
+    ///
+    /// Falls back to the in-memory scan when the store returns nothing, for two
+    /// reasons. A store that cannot answer (a damaged index) should degrade to
+    /// the old search rather than to an empty strip while the user is typing.
+    /// And FTS5 matches whole words and prefixes only, so it cannot find a
+    /// match in the MIDDLE of a word, which the substring scan can. Falling
+    /// back means this change can only ever find MORE than before, never less.
+    private func currentItems() -> [HistoryItem] {
+        let query = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty, let searchProvider else { return history.search(field.stringValue) }
+        let hits = searchProvider(query)
+        return hits.isEmpty ? history.search(field.stringValue) : hits
+    }
+
+    /// Recomputes the visible strip from the field and the selected board.
+    ///
+    /// One place on purpose. `commitDelete` used to rebuild `results` itself
+    /// with `history.search(...)` and NO board filter, so deleting a card while
+    /// a pinboard tab was selected silently replaced the strip with the whole
+    /// history while the tab still rendered as selected. It also skipped the
+    /// empty state, so a delete that emptied the view left no label explaining
+    /// why. Two callers computing the same thing two ways is how that drifted.
+    private func refreshResults() {
         let board = boards.first { $0.id == selectedBoard }
-        results = itemsOn(board, items: all, membership: membership)
+        results = itemsOn(board, items: currentItems(), membership: membership)
         collection.reloadData()
         updateEmptyState(board: board)
+    }
+
+    private func reload() {
+        refreshResults()
         selection = 0
         applySelection(scroll: false)
     }
@@ -693,8 +842,7 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         let removed = history.remove(id: doomed.id)
         Diag.panel.info("deleted 1 item, \(doomed.text.count, privacy: .public) chars, removed \(removed, privacy: .public)")
         let previousSelection = selection
-        results = history.search(field.stringValue)
-        collection.reloadData()
+        refreshResults()
         // Keep the cursor where it was rather than jumping to the start, so
         // holding backspace deletes a run of items the way you would expect.
         selection = min(previousSelection, max(results.count - 1, 0))

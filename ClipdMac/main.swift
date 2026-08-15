@@ -101,6 +101,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let store = self?.store else { return ([], [:]) }
             return ((try? store.allPinboards()) ?? [], (try? store.membership()) ?? [:])
         }
+        // Search goes to the database, not to the 500 rows the panel happens to
+        // hold. With retention on a year, everything older than those 500 was
+        // unfindable, and search gave no hint that it was only looking at part
+        // of the history.
+        panelController.searchProvider = { [weak self] query in
+            guard let store = self?.store else { return [] }
+            return (try? store.search(query, limit: 500)) ?? []
+        }
         panelController.onCreateBoard = { [weak self] name in
             try? self?.store?.createPinboard(name: name)
         }

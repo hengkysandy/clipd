@@ -124,6 +124,163 @@ final class SQLiteStoreTests: XCTestCase {
         XCTAssertTrue(try store.loadAll(limit: 100).isEmpty)
     }
 
+    // MARK: - Search
+
+    func testSearchFindsASingleToken() throws {
+        try store.insert(text("docker compose up"))
+        try store.insert(text("kubectl get pods"))
+        let found = try store.search("compose", limit: 100)
+        XCTAssertEqual(found.map(\.text), ["docker compose up"])
+        // Search must return a whole item, not just a matching string, so the
+        // panel can paste it and show where it came from.
+        XCTAssertEqual(found[0].sourceBundleID, "com.example.app")
+    }
+
+    func testSearchRequiresEveryToken() throws {
+        try store.insert(text("docker compose up"))
+        try store.insert(text("docker build ."))
+        // Both tokens must be present, in any order, the same rule the panel
+        // used when it filtered the in-memory list.
+        XCTAssertEqual(try store.search("docker compose", limit: 100).map(\.text),
+                       ["docker compose up"])
+        XCTAssertEqual(try store.search("compose docker", limit: 100).map(\.text),
+                       ["docker compose up"])
+        XCTAssertTrue(try store.search("docker kubectl", limit: 100).isEmpty)
+    }
+
+    func testSearchMatchesAPrefix() throws {
+        try store.insert(text("docker compose up"))
+        // Typing three letters has to find the word. Without the prefix
+        // operator FTS5 would only match a whole term and search would feel
+        // broken until the last character.
+        XCTAssertEqual(try store.search("doc", limit: 100).map(\.text), ["docker compose up"])
+        XCTAssertEqual(try store.search("doc comp", limit: 100).map(\.text), ["docker compose up"])
+    }
+
+    func testSearchIsCaseInsensitive() throws {
+        try store.insert(text("Docker Compose Up"))
+        XCTAssertEqual(try store.search("docker", limit: 100).count, 1)
+        XCTAssertEqual(try store.search("DOCKER", limit: 100).count, 1)
+        XCTAssertEqual(try store.search("dOcKeR", limit: 100).count, 1)
+    }
+
+    func testSearchNeverReturnsATombstonedItem() throws {
+        let item = text("secret token abcdef")
+        try store.insert(item)
+        XCTAssertEqual(try store.search("secret", limit: 100).count, 1)
+        try store.softDelete(id: item.id, at: Date())
+        // A deleted item reappearing in search results would be the worst kind
+        // of bug this app could have.
+        XCTAssertTrue(try store.search("secret", limit: 100).isEmpty)
+    }
+
+    func testSearchIsNewestFirst() throws {
+        for (offset, label) in [(1000.0, "shared one"), (2000.0, "shared two"), (3000.0, "shared three")] {
+            try store.insert(HistoryItem(text: label, sourceBundleID: nil, sourceName: nil,
+                                         createdAt: Date(timeIntervalSince1970: offset)))
+        }
+        // A clipboard history is a timeline. Relevance ranking would put the
+        // thing you copied 30 seconds ago below an older, better scoring match.
+        XCTAssertEqual(try store.search("shared", limit: 100).map(\.text),
+                       ["shared three", "shared two", "shared one"])
+    }
+
+    func testSearchRespectsTheLimit() throws {
+        for i in 0 ..< 5 {
+            try store.insert(HistoryItem(text: "shared \(i)", sourceBundleID: nil, sourceName: nil,
+                                         createdAt: Date(timeIntervalSince1970: Double(i))))
+        }
+        let found = try store.search("shared", limit: 2)
+        XCTAssertEqual(found.map(\.text), ["shared 4", "shared 3"])
+    }
+
+    func testSearchReturnsAnImageItemIntact() throws {
+        let data = Data(repeating: 0x33, count: 4096)
+        let item = HistoryItem(imageData: data, pixelWidth: 800, pixelHeight: 600,
+                               sourceBundleID: "com.apple.screencaptureui",
+                               sourceName: "Screenshot", createdAt: Date())
+        try store.insert(item)
+        // An image has no text at all. Its preview is "Image 800 x 600", which
+        // is indexed, so typing "image" or a dimension finds it.
+        let found = try store.search("image", limit: 100)
+        XCTAssertEqual(found.count, 1)
+        XCTAssertEqual(found[0].kind, .image)
+        XCTAssertEqual(found[0].imageData, data)
+        XCTAssertEqual(found[0].pixelWidth, 800)
+        XCTAssertEqual(found[0].sourceName, "Screenshot")
+        XCTAssertEqual(try store.search("800", limit: 100).count, 1)
+    }
+
+    func testSearchFindsItemsOlderThanTheInMemoryWindow() throws {
+        // The whole point of using the index. The panel only holds the newest
+        // 500 rows in memory, so before this the 501st item was unfindable.
+        for i in 0 ..< 520 {
+            try store.insert(HistoryItem(text: i == 0 ? "needle in the haystack" : "filler \(i)",
+                                         sourceBundleID: nil, sourceName: nil,
+                                         createdAt: Date(timeIntervalSince1970: Double(i))))
+        }
+        XCTAssertEqual(try store.search("needle", limit: 100).map(\.text),
+                       ["needle in the haystack"])
+    }
+
+    func testAQueryWithNothingSearchableMatchesNothing() throws {
+        try store.insert(text("docker compose up"))
+        // Rejected: returning the whole history. The panel already shows
+        // everything when the field is empty, and answering ":::" with every
+        // item ever copied looks like search quietly gave up.
+        for query in ["", "   ", ":::", "-", "*", "()", "😀"] {
+            XCTAssertTrue(try store.search(query, limit: 100).isEmpty,
+                          "expected no results for a query with no searchable text")
+        }
+    }
+
+    func testFTS5OperatorsAreTreatedAsPlainText() throws {
+        try store.insert(text("apple"))
+        // If OR reached FTS5 as an operator, "a" alone would match "apple" and
+        // this would return a row. Quoting every token is what stops that.
+        XCTAssertTrue(try store.search("a OR b", limit: 100).isEmpty)
+        XCTAssertTrue(try store.search("apple NOT apple", limit: 100).isEmpty)
+        // A quote in the query is doubled, not dropped, so the word still matches.
+        try store.insert(text("he said \"hello\" loudly"))
+        XCTAssertEqual(try store.search("\"hello\"", limit: 100).count, 1)
+    }
+
+    func testHostileQueriesNeverThrow() throws {
+        try store.insert(text("docker compose up"))
+        try store.insert(text("arn:aws:ecs:ap-southeast-3"))
+        // Every one of these is either FTS5 syntax or a character the query
+        // language treats as special. The search field takes pasted text, so
+        // all of them will arrive sooner or later. None may throw, and none may
+        // take the panel down mid-keystroke.
+        let hostile = [
+            "\"", "*", "-foo", "a OR b", "(", ")", "((()", "NEAR/2", "NEAR(a b)",
+            ":", "^", "^foo", "col:foo", "a AND NOT b", "\"unbalanced", "a*b",
+            "AND", "OR", "NOT", "{}", "\\", "%", "😀", "😀 docker", "-", "--",
+            String(repeating: "x", count: 5000),
+            String(repeating: "a ", count: 2500),
+            "arn:aws:ecs:ap-southeast-3",
+        ]
+        for query in hostile {
+            XCTAssertNoThrow(try store.search(query, limit: 100),
+                             "a hostile query threw instead of returning results")
+        }
+        // The store is still usable afterwards.
+        XCTAssertEqual(try store.search("docker", limit: 100).count, 1)
+    }
+
+    func testSearchReturnsNothingRatherThanThrowingOnADamagedIndex() throws {
+        try store.insert(text("docker compose up"))
+        // Stand-in for the "database disk image is malformed" this project
+        // already hit from an FTS5 misuse. Whatever the index does, a user
+        // typing in the search field must not see a thrown error.
+        try db.execute("DROP TABLE items_fts")
+        var found: [HistoryItem]?
+        XCTAssertNoThrow(found = try store.search("docker", limit: 100))
+        XCTAssertEqual(found?.count, 0)
+        // The history itself is untouched, so the panel still lists everything.
+        XCTAssertEqual(try store.loadAll(limit: 100).count, 1)
+    }
+
     // MARK: - Sync payload format
 
     /// The metadata the old builds put in a sync payload. Everything the items
@@ -170,16 +327,52 @@ final class SQLiteStoreTests: XCTestCase {
         }
     }
 
-    func testAPayloadStartsWithTheVersionHeader() throws {
+    /// The writer must stay on v1 until both Macs can read v2.
+    ///
+    /// This is the test that stops a silent one way sync. The 0.3.0 parser reads
+    /// the v2 magic as a 4 byte length, gets about 1.07 GB, fails its own bounds
+    /// check and returns without a throw or a log. Every item written by a v2
+    /// writer would simply never arrive on the older Mac, while sync kept
+    /// reporting success. When the flag is finally flipped, this test is
+    /// supposed to fail and be updated on purpose.
+    func testTheWriterStillEmitsV1SoAnOlderMacCanReadIt() throws {
+        XCTAssertFalse(SQLiteStore.writesFramedPayload,
+                       "flip this test at the same time as the flag, not before")
+
         let item = text("header check")
         try store.insert(item)
         let payload = try XCTUnwrap(store.payload(for: item.id))
 
-        XCTAssertEqual(payload.prefix(4), SQLiteStore.payloadMagic)
-        XCTAssertEqual(payload[4], 2)
-        let length = payload[5 ..< 9].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        XCTAssertNotEqual(payload.prefix(4), SQLiteStore.payloadMagic)
+        // v1 is a 4 byte big endian length, then JSON, so byte 4 is `{`.
+        XCTAssertEqual(payload[4], 0x7B)
+        let length = payload[0 ..< 4].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
         // A text item has no image bytes, so the JSON runs to the end.
-        XCTAssertEqual(Int(length), payload.count - 9)
+        XCTAssertEqual(Int(length), payload.count - 4)
+    }
+
+    /// The v2 READER has to keep working even though nothing writes v2 yet.
+    ///
+    /// Without this, the reader would be untested from the day the writer was
+    /// turned off until the day it is turned back on, which is exactly when it
+    /// needs to be trusted.
+    func testAV2PayloadStillAppliesEvenThoughNothingWritesOneYet() throws {
+        let item = text("written by a future Clipd")
+        try store.insert(item)
+        let v1 = try XCTUnwrap(store.payload(for: item.id))
+
+        // Re-frame the v1 payload as v2 by hand: magic, version byte, then the
+        // v1 bytes unchanged.
+        var v2 = Data()
+        v2.append(SQLiteStore.payloadMagic)
+        v2.append(SQLiteStore.currentPayloadVersion)
+        v2.append(v1)
+
+        try store.eraseAll()
+        try store.apply(payload: v2)
+
+        XCTAssertEqual(try store.loadAll(limit: 10).map(\.text),
+                       ["written by a future Clipd"])
     }
 
     func testATextItemRoundTripsThroughAPayload() throws {

@@ -232,8 +232,21 @@ public func detectCodeLanguage(_ text: String) -> CodeLanguage? {
     // Line shaped languages come before the C-like family. A YAML file is full
     // of colons and a Markdown file is full of dashes, and both would otherwise
     // pick up stray points from the brace based scoring.
-    if markdownEvidence(s).passes { return .markdown }
-    if yamlEvidence(s).passes { return .yaml }
+    // Markdown and YAML are compared rather than tried in order, because a `#`
+    // line means opposite things in the two. It is a heading in Markdown and a
+    // COMMENT in YAML, so a Kubernetes manifest that opens with a few comment
+    // lines fires both. Measured in the running app: a commented StatefulSet
+    // manifest was labelled Markdown.
+    //
+    // The tie goes to YAML on an equal score. A YAML mapping key may not contain
+    // a space, so two or more `key: value` lines are rare in prose and common in
+    // config, while a `#` line is common in both.
+    let markdown = markdownEvidence(s)
+    let yaml = yamlEvidence(s)
+    if markdown.passes || yaml.passes {
+        if markdown.passes && yaml.passes { return yaml.score >= markdown.score ? .yaml : .markdown }
+        return markdown.passes ? .markdown : .yaml
+    }
 
     // Ordered: on an exact tie the earlier language wins. The order puts the
     // languages with the most distinctive signatures first.
