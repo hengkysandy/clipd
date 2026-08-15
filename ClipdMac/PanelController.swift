@@ -328,6 +328,42 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     private func deleteSelected() {
         guard selection >= 0, selection < results.count else { return }
         let doomed = results[selection]
+
+        // Animate the card away before the data changes.
+        //
+        // Without this a card vanishes between two frames and the ones to its
+        // right jump left, which reads as a glitch rather than a deletion. The
+        // motion is what tells you which card went.
+        //
+        // Rejected: NSCollectionView's animator().deleteItems, which needs the
+        // data source mutated in the same batch and fights the reloadData the
+        // filter already relies on.
+        if let view = collection.item(at: IndexPath(item: selection, section: 0))?.view {
+            view.wantsLayer = true
+            let layer = view.layer
+            let original = layer?.transform ?? CATransform3DIdentity
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.16
+                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                context.allowsImplicitAnimation = true
+                view.animator().alphaValue = 0
+                // Shrink towards the card's own centre, not its corner.
+                layer?.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+                layer?.position = CGPoint(x: view.frame.midX, y: view.frame.midY)
+                layer?.transform = CATransform3DScale(original, 0.82, 0.82, 1)
+            }, completionHandler: { [weak self] in
+                // The cell is recycled, so put it back exactly as it was or the
+                // next card to land in this slot inherits a shrunken ghost.
+                view.alphaValue = 1
+                layer?.transform = original
+                self?.commitDelete(of: doomed)
+            })
+            return
+        }
+        commitDelete(of: doomed)
+    }
+
+    private func commitDelete(of doomed: HistoryItem) {
         let removed = history.remove(id: doomed.id)
         Diag.panel.info("deleted 1 item, \(doomed.text.count, privacy: .public) chars, removed \(removed, privacy: .public)")
         let previousSelection = selection

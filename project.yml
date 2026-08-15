@@ -38,6 +38,10 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.hengkysandy.clipd.mac
         SWIFT_VERSION: "6.0"
+        # Regenerate the artwork with: swift tools/makeicon.swift <dir>
+        # Drawn in code so the shape stays editable and the repo carries no
+        # opaque blob whose source nobody has.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MARKETING_VERSION: "0.1.3"
         CURRENT_PROJECT_VERSION: "1"
         # Ad-hoc signing is NOT the default here, unlike the usual advice.
