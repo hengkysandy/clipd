@@ -69,3 +69,17 @@ func removeMostRecent() {
     history.removeMostRecent()
     #expect(history.items.map(\.text) == ["a"])
 }
+
+@Test("A bare URL is a link, prose containing one is not")
+func kindDetection() {
+    #expect(item("https://claude.ai/code/artifact/59a22b55").kind == .link)
+    #expect(item("http://example.com").kind == .link)
+    #expect(item("  https://example.com  ").kind == .link)
+    // Prose that merely mentions a URL is still text.
+    #expect(item("see https://example.com for details").kind == .text)
+    #expect(item("plain words").kind == .text)
+    #expect(item("ftp://example.com").kind == .text)
+    // Degenerate cases must not crash or misclassify.
+    #expect(item("").kind == .text)
+    #expect(item("   ").kind == .text)
+}

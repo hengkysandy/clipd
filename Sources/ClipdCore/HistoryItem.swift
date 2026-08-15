@@ -1,5 +1,13 @@
 import Foundation
 
+/// What a card shows in its header. Deliberately small: the spec collapsed
+/// link, rich text and file into text plus metadata, so this is a display
+/// concern, not a storage one.
+public enum ItemKind: String, Equatable, Sendable {
+    case text
+    case link
+}
+
 public struct HistoryItem: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let text: String
@@ -21,6 +29,15 @@ public struct HistoryItem: Identifiable, Equatable, Sendable {
         self.createdAt = createdAt
         self.contentHash = text
         self.preview = HistoryItem.makePreview(text)
+    }
+
+    /// A single URL and nothing else reads as a link. Anything with whitespace
+    /// is prose that happens to contain a URL, which is still text.
+    public var kind: ItemKind {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.contains(where: \.isWhitespace) else { return .text }
+        guard trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") else { return .text }
+        return .link
     }
 
     /// One line, bounded length. A card cannot show a 3 MB paste and trying to

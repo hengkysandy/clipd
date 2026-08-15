@@ -11,8 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "Clipd"
-        rebuildMenu()
+        rebuildMenu()   // sets the icon too
 
         watcher = PasteboardWatcher(
             onCapture: { [weak self] item in
@@ -73,7 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // nothing, so the app would otherwise look completely healthy while
         // pasting nothing at all.
         let trusted = AXIsProcessTrusted()
-        statusItem.button?.title = trusted ? "Clipd" : "Clipd (!)"
+        setStatusIcon(trusted: trusted)
         let header = NSMenuItem(
             title: trusted
                 ? "Clipd \(ClipdCore.version), \(history.items.count) items"
@@ -91,6 +90,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quit.target = self
         menu.addItem(quit)
         statusItem.menu = menu
+    }
+
+    /// A clipboard glyph, not the word "Clipd". A text title eats menu bar
+    /// space that belongs to the user.
+    ///
+    /// The untrusted state keeps the loud failure: a different symbol, drawn
+    /// in orange and NOT as a template, so it stays orange in both light and
+    /// dark menu bars. Without Accessibility macOS discards every synthesised
+    /// event and reports nothing, so the app must contradict itself visibly.
+    private func setStatusIcon(trusted: Bool) {
+        guard let button = statusItem.button else { return }
+        button.title = ""
+        let name = trusted ? "doc.on.clipboard" : "exclamationmark.triangle.fill"
+        let description = trusted ? "Clipd" : "Clipd, paste disabled"
+        let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: description)?
+            .withSymbolConfiguration(config)
+        image?.isTemplate = trusted
+        button.image = image
+        button.contentTintColor = trusted ? nil : .systemOrange
+        button.toolTip = trusted
+            ? "Clipd"
+            : "Clipd cannot paste: Accessibility is not granted"
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
