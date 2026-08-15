@@ -17,4 +17,6 @@ enum Diag {
                               category: "paste")
     static let panel = Logger(subsystem: "com.hengkysandy.clipd.mac",
                               category: "panel")
+    static let sync = Logger(subsystem: "com.hengkysandy.clipd.mac",
+                             category: "sync")
 }

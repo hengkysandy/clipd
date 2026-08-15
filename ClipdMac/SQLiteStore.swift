@@ -154,4 +154,95 @@ final class SQLiteStore {
         try db.execute("DELETE FROM items_fts")
         try db.execute("DELETE FROM items")
     }
+
+    // MARK: - Sync
+
+    /// Every row including tombstones, as sync records.
+    ///
+    /// Tombstones are included on purpose. Without them the other Mac never
+    /// learns about a delete and resurrects it on the next pass.
+    func allRecords() throws -> [SyncRecord] {
+        try db.query("SELECT id, updated_at, deleted_at, device_id FROM items", [])
+            .compactMap { row in
+                guard case .text(let idString)? = row["id"], let id = UUID(uuidString: idString),
+                      case .int(let updated)? = row["updated_at"],
+                      case .text(let device)? = row["device_id"] else { return nil }
+                var deletedAt: Date?
+                if case .int(let deleted)? = row["deleted_at"] {
+                    deletedAt = Date(timeIntervalSince1970: Double(deleted) / 1000)
+                }
+                return SyncRecord(id: id,
+                                  updatedAt: Date(timeIntervalSince1970: Double(updated) / 1000),
+                                  deletedAt: deletedAt, deviceID: device)
+            }
+    }
+
+    /// The full row as JSON, ready to be encrypted and uploaded.
+    func payload(for id: UUID) throws -> Data? {
+        let rows = try db.query("""
+            SELECT id, kind, created_at, updated_at, deleted_at, device_id,
+                   source_bundle, source_name, source_url, content_hash,
+                   text_content, preview, char_count, px_width, px_height, blob_ref
+            FROM items WHERE id = ?
+            """, [.text(id.uuidString)])
+        guard let row = rows.first else { return nil }
+
+        var json: [String: Any] = [:]
+        for (name, value) in row {
+            switch value {
+            case .text(let s): json[name] = s
+            case .int(let n): json[name] = n
+            case .blob, .null: break
+            }
+        }
+        // The image bytes travel inside the payload, base64 encoded. Rejected:
+        // a second object per image, which doubles the request count and makes
+        // an item and its picture separately losable.
+        if case .text(let ref)? = row["blob_ref"], let data = try? blobs.read(ref) {
+            json["blob_data"] = data.base64EncodedString()
+        }
+        return try JSONSerialization.data(withJSONObject: json)
+    }
+
+    /// Writes a row that came from the other Mac.
+    func apply(payload: Data) throws {
+        guard let json = try JSONSerialization.jsonObject(with: payload) as? [String: Any],
+              let idString = json["id"] as? String, let id = UUID(uuidString: idString) else {
+            return
+        }
+        var blobRef: SQLValue = .null
+        if let base64 = json["blob_data"] as? String, let data = Data(base64Encoded: base64) {
+            blobRef = .text(try blobs.write(data, id: id))
+        }
+        func text(_ key: String) -> SQLValue {
+            (json[key] as? String).map { SQLValue.text($0) } ?? .null
+        }
+        func int(_ key: String) -> SQLValue {
+            (json[key] as? Int64).map { SQLValue.int($0) }
+                ?? (json[key] as? Int).map { SQLValue.int(Int64($0)) } ?? .null
+        }
+        try db.run("""
+            INSERT OR REPLACE INTO items
+              (id, kind, created_at, updated_at, deleted_at, device_id,
+               source_bundle, source_name, source_url, content_hash,
+               text_content, preview, char_count, px_width, px_height,
+               blob_ref, pinned)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+            """, [
+                .text(id.uuidString), text("kind"), int("created_at"), int("updated_at"),
+                int("deleted_at"), text("device_id"), text("source_bundle"),
+                text("source_name"), text("source_url"), text("content_hash"),
+                text("text_content"), text("preview"), int("char_count"),
+                int("px_width"), int("px_height"), blobRef,
+            ])
+        try db.run("""
+            INSERT INTO items_fts(rowid, text_content, preview)
+            SELECT rowid, text_content, preview FROM items WHERE id = ?
+            """, [.text(id.uuidString)])
+    }
+
+    /// Marks an item deleted because the other Mac deleted it.
+    func applyTombstone(id: UUID, at date: Date) throws {
+        try softDelete(id: id, at: date)
+    }
 }

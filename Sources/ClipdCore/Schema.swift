@@ -72,14 +72,35 @@ public enum Schema {
             """,
             "CREATE INDEX idx_item_pinboards_board ON item_pinboards(pinboard_id, deleted_at)",
 
-            // External content: the index stores no copy of the text, it points
-            // at items. Rejected: a standalone fts5 table, which would hold a
-            // second plaintext copy of everything and double the database.
+            // Standalone, NOT external content. See migration 2 for why.
             """
-            CREATE VIRTUAL TABLE items_fts USING fts5(
-              text_content, preview,
-              content='items', content_rowid='rowid'
-            )
+            CREATE VIRTUAL TABLE items_fts USING fts5(text_content, preview)
+            """,
+        ]),
+
+        Migration(version: 2, statements: [
+            // Rebuild the search index as a standalone table.
+            //
+            // Version 1 declared it with content='items', which is FTS5's
+            // external content mode. In that mode you must never INSERT or
+            // DELETE the index directly; you use the special 'delete' command
+            // with the original column values, or triggers. Doing it directly
+            // corrupts the index, and SQLite then reports "database disk image
+            // is malformed" on the next write.
+            //
+            // Measured: a sync test hit exactly that. A standalone table costs
+            // a second copy of the text, which the original comment rejected on
+            // size grounds. That reasoning was wrong twice over: the copy lives
+            // inside the SQLCipher database so it is not plaintext, images are
+            // not indexed at all, and correctness beats a few hundred kilobytes.
+            //
+            // This migration also repairs any database already corrupted by the
+            // version 1 index.
+            "DROP TABLE IF EXISTS items_fts",
+            "CREATE VIRTUAL TABLE items_fts USING fts5(text_content, preview)",
+            """
+            INSERT INTO items_fts(rowid, text_content, preview)
+            SELECT rowid, text_content, preview FROM items WHERE deleted_at IS NULL
             """,
         ]),
     ]

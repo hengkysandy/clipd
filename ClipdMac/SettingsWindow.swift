@@ -9,7 +9,9 @@ final class SettingsWindowController: NSWindowController {
     private let settings: AppSettings
     private let onErase: () -> Void
 
-    init(settings: AppSettings, onErase: @escaping () -> Void) {
+    init(settings: AppSettings,
+         onErase: @escaping () -> Void,
+         onSyncNow: @escaping (R2Credentials, String, @escaping (String) -> Void) -> Void) {
         self.settings = settings
         self.onErase = onErase
 
@@ -17,6 +19,7 @@ final class SettingsWindowController: NSWindowController {
         tabs.tabStyle = .toolbar
         tabs.addChild(GeneralPane(settings: settings, onErase: onErase))
         tabs.addChild(PrivacyPane(settings: settings))
+        tabs.addChild(SyncPane(onSyncNow: onSyncNow))
 
         let window = NSWindow(contentViewController: tabs)
         window.title = "Clipd Settings"

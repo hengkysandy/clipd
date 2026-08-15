@@ -327,9 +327,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         if settingsWindow == nil {
-            settingsWindow = SettingsWindowController(settings: settings, onErase: { [weak self] in
-                self?.eraseAllHistory()
-            })
+            settingsWindow = SettingsWindowController(
+                settings: settings,
+                onErase: { [weak self] in self?.eraseAllHistory() },
+                onSyncNow: { [weak self] credentials, passphrase, report in
+                    self?.runSync(credentials: credentials, passphrase: passphrase, report: report)
+                })
         }
         settingsWindow?.show()
     }
@@ -342,6 +345,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             rebuildMenu()
         } catch {
             Diag.capture.error("erase failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Runs one sync pass and reports the outcome in the Sync pane.
+    ///
+    /// Manual only for now. Rejected: syncing on every capture, which would put
+    /// a network round trip on the Cmd+C path.
+    private func runSync(credentials: R2Credentials, passphrase: String,
+                         report: @escaping (String) -> Void) {
+        guard let store else { report("The local store is not open."); return }
+        let deviceID = Self.deviceIdentifier()
+        Task {
+            do {
+                let client = R2Client(credentials: credentials)
+                let salt = try await SyncEngine.fetchOrCreateSalt(client: client)
+                let key = SyncCrypto.deriveKey(passphrase: passphrase, salt: salt)
+                let engine = SyncEngine(client: client, store: store,
+                                        deviceID: deviceID, key: key)
+                let summary = try await engine.runOnce()
+                let refreshed = try store.loadAll(limit: 500)
+                Diag.sync.info("sync ok: up \(summary.uploaded, privacy: .public), down \(summary.downloaded, privacy: .public), tombstones \(summary.tombstoned, privacy: .public)")
+                await MainActor.run {
+                    self.history.load(refreshed)
+                    self.rebuildMenu()
+                    report("Synced. \(summary.uploaded) uploaded, \(summary.downloaded) downloaded, "
+                           + "\(summary.tombstoned) deleted. \(refreshed.count) items here now.")
+                }
+            } catch {
+                // Loud. A silent sync failure means the other Mac quietly
+                // diverges and nobody notices for weeks.
+                Diag.sync.error("sync failed: \(String(describing: error), privacy: .public)")
+                await MainActor.run { report("Sync failed: \(error)") }
+            }
         }
     }
 
