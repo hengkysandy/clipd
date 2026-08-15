@@ -153,3 +153,54 @@ func imagesAreSearchable() {
     #expect(history.search("2560").count == 1)
     #expect(history.search("ordinary").count == 1)
 }
+
+@Test("Adding a new item reports an insert, not a touch")
+func hooksOnInsert() {
+    let history = History()
+    var inserted: [String] = []
+    var touched = 0
+    history.onInsert = { inserted.append($0.text) }
+    history.onTouch = { _, _ in touched += 1 }
+    _ = history.add(item("first", at: 100))
+    #expect(inserted == ["first"])
+    #expect(touched == 0)
+}
+
+@Test("A repeat copy reports a touch, not a second insert")
+func hooksOnTouch() {
+    let history = History()
+    var inserts = 0
+    var touches = 0
+    history.onInsert = { _ in inserts += 1 }
+    history.onTouch = { _, _ in touches += 1 }
+    _ = history.add(item("same", at: 100))
+    _ = history.add(item("same", at: 200))
+    // Two copies of the same thing must not become two rows.
+    #expect(inserts == 1)
+    #expect(touches == 1)
+}
+
+@Test("Both delete paths report a delete")
+func hooksOnDelete() {
+    let history = History()
+    var deleted = 0
+    history.onDelete = { _ in deleted += 1 }
+    _ = history.add(item("a", at: 100))
+    _ = history.add(item("b", at: 200))
+    history.removeMostRecent()
+    #expect(deleted == 1)
+    _ = history.remove(id: history.items[0].id)
+    #expect(deleted == 2)
+}
+
+@Test("Loading from disk does not fire the persistence hooks")
+func loadDoesNotEcho() {
+    let history = History()
+    var inserts = 0
+    history.onInsert = { _ in inserts += 1 }
+    // These rows came FROM the database. Firing onInsert would write them
+    // straight back, which is a write amplification loop on every launch.
+    history.load([item("from disk", at: 100)])
+    #expect(inserts == 0)
+    #expect(history.items.count == 1)
+}

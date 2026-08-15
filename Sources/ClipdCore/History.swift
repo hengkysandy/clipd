@@ -9,8 +9,22 @@ public final class History {
     private var storage: [HistoryItem] = []
     private let limit: Int
 
+    /// Persistence hooks. Core defines the shape; the shell supplies the
+    /// database. Rejected: Core importing SQLCipher, which would make every
+    /// Core test need a database file and lose the millisecond test suite.
+    public var onInsert: ((HistoryItem) -> Void)?
+    public var onTouch: ((UUID, Date) -> Void)?
+    public var onDelete: ((UUID) -> Void)?
+
     public init(limit: Int = 500) {
         self.limit = limit
+    }
+
+    /// Replaces the in-memory contents, newest first. Used once at launch.
+    /// Does NOT fire the persistence hooks: these rows came from the database,
+    /// and echoing them back would rewrite the whole history on every launch.
+    public func load(_ items: [HistoryItem]) {
+        storage = items
     }
 
     /// Newest first.
@@ -23,10 +37,12 @@ public final class History {
         if let existing = storage.firstIndex(where: { $0.contentHash == item.contentHash }) {
             let moved = storage.remove(at: existing)
             storage.insert(moved, at: 0)
+            onTouch?(moved.id, item.createdAt)
             return false
         }
         storage.insert(item, at: 0)
         if storage.count > limit { storage.removeLast(storage.count - limit) }
+        onInsert?(item)
         return true
     }
 
@@ -34,7 +50,8 @@ public final class History {
     /// was just captured. Must be safe on an empty history.
     public func removeMostRecent() {
         guard !storage.isEmpty else { return }
-        storage.removeFirst()
+        let removed = storage.removeFirst()
+        onDelete?(removed.id)
     }
 
     /// Deletes one item by identity. Returns true if something was removed.
@@ -46,6 +63,7 @@ public final class History {
     public func remove(id: UUID) -> Bool {
         guard let index = storage.firstIndex(where: { $0.id == id }) else { return false }
         storage.remove(at: index)
+        onDelete?(id)
         return true
     }
 

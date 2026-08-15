@@ -10,9 +10,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let history = History()
     private var pause = PauseState.running
     private var pauseTicker: Timer?
+    private var database: Database?
+    private var store: SQLiteStore?
     private var lastPausedFlag = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        openStore()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         rebuildMenu()   // sets the icon too
 
@@ -232,6 +235,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.image = image
         button.contentTintColor = trusted ? nil : .systemOrange
         button.toolTip = description
+    }
+
+    /// Opens the database and primes the in-memory history from it.
+    ///
+    /// The panel keeps reading from memory. Rejected: querying SQLite on every
+    /// keystroke, which puts disk latency inside the search box for a history
+    /// that fits in memory anyway.
+    private func openStore() {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory,
+                                               in: .userDomainMask)[0]
+            .appendingPathComponent("Clipd")
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+
+        do {
+            let key = try DatabaseKey.loadOrCreate()
+            let db = try Database(path: support.appendingPathComponent("clipd.sqlite").path,
+                                  key: key)
+            try db.migrate()
+            let blobs = BlobStore(directory: support.appendingPathComponent("blobs"),
+                                  key: BlobStore.symmetricKey(fromHex: key))
+            let store = SQLiteStore(database: db, blobs: blobs,
+                                    deviceID: Self.deviceIdentifier())
+
+            history.load(try store.loadAll(limit: 500))
+            history.onInsert = { item in try? store.insert(item) }
+            history.onTouch = { id, date in try? store.touch(id: id, at: date) }
+            history.onDelete = { id in try? store.hardDelete(id: id) }
+
+            self.database = db
+            self.store = store
+            Diag.capture.info("store opened, \(self.history.items.count, privacy: .public) items restored")
+        } catch {
+            // Loud, not silent. A failed store means every copy is lost on quit,
+            // and the user must not discover that tomorrow.
+            Diag.capture.error("STORE FAILED TO OPEN: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Stable per Mac, generated once. Identifies the device for sync, not the
+    /// user, and never leaves the machine in v1.
+    private static func deviceIdentifier() -> String {
+        let key = "clipd.deviceID"
+        if let existing = UserDefaults.standard.string(forKey: key) { return existing }
+        let fresh = UUID().uuidString
+        UserDefaults.standard.set(fresh, forKey: key)
+        return fresh
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
