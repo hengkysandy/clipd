@@ -260,21 +260,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.title = ""
         // A paused app must not look identical to a working one, or you find
         // out it recorded nothing an hour later.
-        let name: String
         let description: String
+        let image: NSImage?
         if !trusted {
-            name = "exclamationmark.triangle.fill"
             description = "Clipd, paste disabled"
+            image = NSImage(systemSymbolName: "exclamationmark.triangle.fill",
+                            accessibilityDescription: description)?
+                .withSymbolConfiguration(.init(pointSize: 15, weight: .regular))
         } else if paused {
-            name = "pause.circle"
             description = "Clipd, paused"
+            image = NSImage(systemSymbolName: "pause.circle",
+                            accessibilityDescription: description)?
+                .withSymbolConfiguration(.init(pointSize: 15, weight: .regular))
         } else {
-            name = "doc.on.clipboard"
+            // The real artwork, from art/clipd-menubar-solid.svg.
+            //
+            // isTemplate is what makes macOS recolour it for a light or dark
+            // menu bar. The asset already declares template rendering intent,
+            // but setting it here too means a hand copied PNG cannot silently
+            // lose it.
             description = "Clipd"
+            image = NSImage(named: "MenuBarIcon")
+            image?.size = NSSize(width: 18, height: 18)
         }
-        let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
-        let image = NSImage(systemSymbolName: name, accessibilityDescription: description)?
-            .withSymbolConfiguration(config)
         image?.isTemplate = trusted
         button.image = image
         button.contentTintColor = trusted ? nil : .systemOrange

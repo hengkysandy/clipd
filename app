@@ -84,6 +84,25 @@ case "${1:-}" in
     echo "  xattr -dr com.apple.quarantine /Applications/Clipd.app"
     codesign -dv --verbose=2 "dist/stage/Clipd.app" 2>&1 | grep -E '^(Identifier|Signature)'
     ;;
+  icons)
+    # Rebuilds art/AppIcon.icns from the asset catalog PNGs.
+    #
+    # iconutil rather than the asset catalog, because Xcode 26 silently dropped
+    # every size above 256 from a scale-based AppIcon set. iconutil needs the
+    # "@2x" naming that the exported set does not use, so the files are staged
+    # under the names it expects.
+    SET="ClipdMac/Assets.xcassets/AppIcon.appiconset"
+    rm -rf art/AppIcon.iconset && mkdir -p art/AppIcon.iconset
+    for pair in "16x16:" "16x16:-2x" "32x32:" "32x32:-2x" "128x128:" "128x128:-2x" \
+                "256x256:" "256x256:-2x" "512x512:" "512x512:-2x"; do
+      size="${pair%%:*}"; suffix="${pair##*:}"
+      target="icon_${size}.png"
+      [ -n "$suffix" ] && target="icon_${size}@2x.png"
+      cp "$SET/icon_${size}${suffix}.png" "art/AppIcon.iconset/$target"
+    done
+    iconutil -c icns art/AppIcon.iconset -o art/AppIcon.icns
+    echo "built art/AppIcon.icns"
+    ;;
   sig)
     # The A9 check. The designated requirement must contain identifier and
     # certificate, and must NOT contain a cdhash. If it does, rebuilds will
@@ -99,7 +118,7 @@ case "${1:-}" in
     echo "Accessibility reset. Relaunch and grant again."
     ;;
   *)
-    echo "usage: ./app {up|test|dmg|sig|trust}"
+    echo "usage: ./app {up|test|icons|dmg|sig|trust}"
     exit 1
     ;;
 esac

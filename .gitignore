@@ -11,3 +11,6 @@ DerivedData/
 
 # Local development only. Never commit credentials.
 .env.local
+
+# Staging directory for iconutil. Rebuilt by ./app icons.
+art/AppIcon.iconset/

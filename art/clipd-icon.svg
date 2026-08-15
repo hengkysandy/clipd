@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="gB" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4338CA"></stop>
+      <stop offset="100%" stop-color="#7B2FCE"></stop>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.26"></stop>
+      <stop offset="55%" stop-color="#ffffff" stop-opacity="0.05"></stop>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"></stop>
+    </linearGradient>
+    <clipPath id="sqClip">
+      <path d="M300,0 H724 C916,0 1024,108 1024,300 V724 C1024,916 916,1024 724,1024 H300 C108,1024 0,916 0,724 V300 C0,108 108,0 300,0 Z"></path>
+    </clipPath>
+    <filter id="boardShadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="20" stdDeviation="26" flood-color="#1B0B45" flood-opacity="0.34"></feDropShadow>
+    </filter>
+  </defs>
+  <g clip-path="url(#sqClip)">
+    <rect width="1024" height="1024" fill="url(#gB)"></rect>
+    <rect width="1024" height="620" fill="url(#sheen)"></rect>
+    <rect x="286" y="150" width="580" height="740" rx="88" fill="#FFFFFF" fill-opacity="0.3"></rect>
+    <rect x="244" y="178" width="580" height="740" rx="88" fill="#FFFFFF" fill-opacity="0.5"></rect>
+    <g filter="url(#boardShadow)">
+      <rect x="166" y="232" width="596" height="722" rx="90" fill="#FCFCFE"></rect>
+    </g>
+    <rect x="346" y="172" width="236" height="122" rx="40" fill="#33208F"></rect>
+    <rect x="250" y="470" width="428" height="52" rx="26" fill="#C6C6DE"></rect>
+    <rect x="250" y="596" width="428" height="52" rx="26" fill="#C6C6DE"></rect>
+    <rect x="250" y="722" width="264" height="52" rx="26" fill="#C6C6DE"></rect>
+  </g>
+</svg>
