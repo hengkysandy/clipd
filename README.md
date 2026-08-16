@@ -164,6 +164,12 @@ clipd/
 
 The design document in [`docs/design.md`](docs/design.md) records not only what was chosen but what was rejected and why, including the platform assumptions that turned out to be false when they were probed.
 
+## The website
+
+The landing page at <https://clipd.hengkysandy.com> lives in its own repository,
+`clipd-site`, so it can be deployed without touching the app. The screenshots it
+uses are copied from `docs/images/` here.
+
 ## Contributing
 
 Contributions are welcome, from a typo fix to a whole feature.
