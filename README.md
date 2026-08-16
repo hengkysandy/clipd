@@ -188,8 +188,6 @@ Clipd never writes clipboard values to the log, only kinds, sizes and reasons, s
 
 Clipd is modelled on [Paste](https://pasteapp.io), which is a lovely app and worth paying for. This exists because of a wish for a version that syncs through storage the owner controls.
 
-The README layout follows [Ice](https://github.com/jordanbaird/Ice), which is a good example of explaining a Mac app quickly.
-
 ## License
 
 Clipd is available under the [MIT license](LICENSE).
