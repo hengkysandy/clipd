@@ -501,10 +501,14 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         })
     }
 
+    /// Where the banner gets its answer. The app delegate points this at the
+    /// AccessibilityMonitor, so the panel and the menu bar cannot disagree.
+    var trustProbe: () -> Bool = { AXIsProcessTrusted() }
+
     /// Accessibility failure is invisible: macOS discards synthesised events
     /// with no error at all.
     func updateTrustBanner() {
-        let trusted = AXIsProcessTrusted()
+        let trusted = trustProbe()
         banner.isHidden = trusted
         field.isHidden = !trusted
         if !trusted {

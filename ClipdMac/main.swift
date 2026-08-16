@@ -40,6 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pauseTicker: Timer?
     private var settings = AppSettings()
     private var settingsWindow: SettingsWindowController?
+    private let accessibility = AccessibilityMonitor(probe: DemoMode.accessibilityProbe)
+    private var onboarding: OnboardingWindowController?
     private var retentionTimer: Timer?
     private var syncTimer: Timer?
     private var syncDebounce: Timer?
@@ -152,6 +154,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // fire, so this is not the only way coexistence goes wrong.
             Diag.panel.error("Cmd+Shift+V is already taken. If the real Paste app is running, quit it.")
         }
+        startAccessibilityMonitor()
+    }
+
+    /// Keeps the whole app honest about the permission, and runs first-run
+    /// onboarding when it is missing.
+    ///
+    /// The monitor runs whether or not the window is shown. Someone who grants
+    /// the permission months later, from System Settings and with no Clipd
+    /// window open, should see the menu bar icon stop warning at that moment,
+    /// not on their next launch.
+    private func startAccessibilityMonitor() {
+        panelController.trustProbe = { [weak self] in self?.accessibility.isTrusted ?? false }
+        accessibility.onChange = { [weak self] trusted in
+            guard let self else { return }
+            rebuildMenu()                            // repaints the status icon
+            panelController.updateTrustBanner()
+            onboarding?.permissionChanged(trusted: trusted)
+        }
+        accessibility.start()
+
+        guard !accessibility.isTrusted, settings.showAccessibilityOnboarding else { return }
+        openOnboarding()
+    }
+
+    /// Opens the onboarding window, reusing the existing one if it is still
+    /// around. Two copies of it would each hold their own "waiting" state and
+    /// only one would ever be updated.
+    @objc private func openOnboarding() {
+        accessibility.check()
+        if onboarding == nil {
+            onboarding = OnboardingWindowController(monitor: accessibility, settings: settings)
+        }
+        onboarding?.show()
+        Diag.panel.info("onboarding shown, trusted \(self.accessibility.isTrusted, privacy: .public)")
     }
 
     /// Builds the pasteboard watcher and its two callbacks.
@@ -211,7 +247,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Accessibility macOS discards every synthesised event and reports
         // nothing, so the app would otherwise look completely healthy while
         // pasting nothing at all.
-        let trusted = AXIsProcessTrusted()
+        // From the monitor, not from AXIsProcessTrusted() again. One reader
+        // means the icon, the panel banner and the onboarding window always
+        // agree, and the answer cannot change halfway through building a menu.
+        let trusted = accessibility.isTrusted
         setStatusIcon(trusted: trusted, paused: pause.isPaused(now: Date()))
         let header = NSMenuItem(
             title: trusted
@@ -220,6 +259,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
+        // A statement of the problem is not a way out of it. Somebody who
+        // dismissed first run, or who turned the permission off again later,
+        // otherwise has to work out for themselves which pane of System
+        // Settings this lives in.
+        if !trusted {
+            let fix = NSMenuItem(title: "Fix This, Grant Accessibility...",
+                                 action: #selector(openOnboarding), keyEquivalent: "")
+            fix.target = self
+            menu.addItem(fix)
+        }
         menu.addItem(.separator())
         // Deliberately no clipboard preview here.
         //

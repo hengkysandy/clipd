@@ -13,6 +13,7 @@ final class AppSettings {
         static let ignored = "clipd.ignoredBundleIDs"
         static let ignoredSeeded = "clipd.ignoredSeeded"
         static let autoSync = "clipd.autoSyncEnabled"
+        static let showOnboarding = "clipd.showAccessibilityOnboarding"
     }
 
     /// Measured: Apple's Passwords.app sets no concealed marker at all, so for
@@ -77,6 +78,24 @@ final class AppSettings {
         }
         set {
             defaults.set(newValue, forKey: Key.autoSync)
+            onChange?()
+        }
+    }
+
+    /// Whether first run explains the Accessibility permission.
+    ///
+    /// Defaults to on, and it is only ever consulted while the permission is
+    /// missing, so somebody who has granted it never sees the window again
+    /// whatever this says. The opt out exists for the person who deliberately
+    /// runs Clipd as a history recorder with no pasting: for them the window
+    /// would be a nag about a permission they have decided not to give.
+    var showAccessibilityOnboarding: Bool {
+        get {
+            if defaults.object(forKey: Key.showOnboarding) == nil { return true }
+            return defaults.bool(forKey: Key.showOnboarding)
+        }
+        set {
+            defaults.set(newValue, forKey: Key.showOnboarding)
             onChange?()
         }
     }

@@ -1,3 +1,4 @@
+import ApplicationServices
 import Foundation
 
 /// A throwaway instance of Clipd, pointed at a database that is not yours.
@@ -27,6 +28,35 @@ import Foundation
 enum DemoMode {
     static var isOn: Bool {
         ProcessInfo.processInfo.environment["CLIPD_SUPPORT_DIR"]?.isEmpty == false
+    }
+
+    /// Pretends the Accessibility permission is missing.
+    ///
+    /// True while a file named `pretend-untrusted` sits in the scratch support
+    /// directory. Create it before launching to see first run, then delete it
+    /// to act out the grant. A file rather than an environment variable
+    /// precisely so it can change while the app runs, which is the only way to
+    /// watch the window turn from waiting to ready without revoking the real
+    /// permission. Revoking the real one means granting it again afterwards,
+    /// and a mistake there leaves that Mac unable to paste.
+    ///
+    /// Gated on `isOn`, so this can never fake a missing permission in a real
+    /// instance and convince somebody their working grant has broken.
+    static var pretendsUntrusted: Bool {
+        guard isOn else { return false }
+        return FileManager.default.fileExists(
+            atPath: supportDirectory.appendingPathComponent("pretend-untrusted").path)
+    }
+
+    /// The one place the app asks whether it may paste.
+    ///
+    /// Everything reads the answer through `AccessibilityMonitor`, so the menu
+    /// bar icon, the panel banner and the onboarding window cannot disagree
+    /// about it.
+    /// Evaluated on every call, not captured once, so the pretend state can
+    /// change while the app runs.
+    static var accessibilityProbe: () -> Bool {
+        { isOn ? !pretendsUntrusted : AXIsProcessTrusted() }
     }
 
     /// Where the database and the encrypted blobs live.

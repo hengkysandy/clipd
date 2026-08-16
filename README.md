@@ -33,7 +33,9 @@ Clipd is signed with an Apple Development certificate, not a paid Developer ID, 
 xattr -dr com.apple.quarantine /Applications/Clipd.app
 ```
 
-Then open Clipd and grant it **Accessibility** in System Settings, Privacy and Security. Pasting is a synthetic Cmd+V, so without that permission Clipd will record your history and paste nothing.
+Then open Clipd. It asks for **Accessibility** permission, opens the right pane of System Settings for you, and notices the moment you turn the switch on. There is no quit and reopen step.
+
+Pasting is a synthetic Cmd+V, and macOS only allows that with this permission. Without it Clipd records your history perfectly well and pastes none of it back, with no error anywhere, which is why the app asks up front rather than at your first paste.
 
 ### Build from source
 
@@ -116,6 +118,7 @@ Sync is optional. Clipd works fully offline and stores nothing anywhere until yo
 ### Other
 
 - [x] Menu bar only, no Dock icon and no window on launch
+- [x] Guided first run for the Accessibility permission, with no restart step
 - [x] Open at login
 - [ ] Homebrew cask
 - [ ] Notarised builds, which need a paid Apple Developer account
@@ -137,6 +140,10 @@ Clipd uses Swift 6 with strict concurrency and several newer AppKit and CryptoKi
 **Every card has a menu.** Paste, copy, give it a name, pin it to a board, or delete it.
 
 ![The card menu](docs/images/menu.png)
+
+**First run asks for one permission and waits for it.** Clipd notices the moment the switch is turned on, so there is nothing to quit and reopen.
+
+![First run](docs/images/onboarding.png)
 
 Every item in these screenshots is invented sample content. They were taken with a throwaway instance of the app, which is what `CLIPD_SUPPORT_DIR` is for. See [`ClipdMac/DemoMode.swift`](ClipdMac/DemoMode.swift) if you want to take your own.
 
