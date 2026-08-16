@@ -370,9 +370,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// keystroke, which puts disk latency inside the search box for a history
     /// that fits in memory anyway.
     private func openStore() {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory,
-                                               in: .userDomainMask)[0]
-            .appendingPathComponent("Clipd")
+        let support = DemoMode.supportDirectory
         try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
 
         do {
@@ -397,7 +395,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             retentionTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.runRetentionSweep() }
             }
-            startAutoSync()
+            if DemoMode.isOn {
+                Diag.capture.info("demo instance, sync disabled")
+            } else {
+                startAutoSync()
+            }
             Diag.capture.info("store opened, \(self.history.items.count, privacy: .public) items restored")
         } catch {
             // Loud, not silent. A failed store means every copy is lost on quit,

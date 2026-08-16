@@ -18,7 +18,14 @@ enum SyncCredentialStore {
         let passphrase: String
     }
 
+    /// Every entry point is closed in demo mode, not just the read.
+    ///
+    /// A demo instance runs against a scratch database but shares the login
+    /// Keychain with the real one. Reading would put the real account id into
+    /// the settings pane that is about to be screenshotted; writing would let a
+    /// form filled in as a prop overwrite the credentials that actually work.
     static func save(_ credentials: R2Credentials, passphrase: String) throws {
+        guard !DemoMode.isOn else { return }
         let stored = Stored(accountID: credentials.accountID,
                             accessKeyID: credentials.accessKeyID,
                             secretAccessKey: credentials.secretAccessKey,
@@ -38,6 +45,7 @@ enum SyncCredentialStore {
     }
 
     static func load() throws -> (R2Credentials, String)? {
+        guard !DemoMode.isOn else { return nil }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -59,6 +67,7 @@ enum SyncCredentialStore {
     }
 
     static func clear() throws {
+        guard !DemoMode.isOn else { return }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
