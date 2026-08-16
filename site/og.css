@@ -7,30 +7,31 @@ body { width: 1200px; height: 630px; overflow: hidden; }
   width: 1200px;
   height: 630px;
   padding: 62px 64px;
-  background: linear-gradient(160deg, #241d45 0%, #100f17 62%);
+  background: linear-gradient(160deg, #1d1839 0%, #0b0b12 64%);
   color: #eeebf6;
-  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-family: "Plex Sans", -apple-system, system-ui, sans-serif;
   overflow: hidden;
 }
 
 .glow {
   position: absolute;
   inset: -20% 40% 40% -10%;
-  background: radial-gradient(circle at 30% 40%, rgba(124, 92, 255, .55), transparent 62%);
+  background: radial-gradient(circle at 30% 40%, rgba(139, 107, 255, .5), transparent 62%);
   filter: blur(20px);
 }
 
 .row { display: flex; align-items: center; gap: 16px; position: relative; }
 .icon { width: 52px; height: 52px; border-radius: 12px; }
-.name { font-size: 30px; font-weight: 600; letter-spacing: -.02em; }
+.name { font-family: "Plex Mono", ui-monospace, Menlo, monospace; font-size: 28px; font-weight: 600; letter-spacing: -.03em; }
 
 h1 {
   position: relative;
   margin-top: 40px;
-  font-size: 62px;
+  font-family: "Plex Mono", ui-monospace, Menlo, monospace;
+  font-size: 52px;
   font-weight: 600;
-  line-height: 1.08;
-  letter-spacing: -.03em;
+  line-height: 1.14;
+  letter-spacing: -.035em;
 }
 
 p {
@@ -47,7 +48,7 @@ p {
   margin-top: 34px;
   display: flex;
   gap: 10px;
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-family: "Plex Mono", ui-monospace, Menlo, monospace;
   font-size: 15px;
   color: #cfc6ff;
 }

@@ -5,12 +5,16 @@
   Permissions-Policy: geolocation=(), camera=(), microphone=(), payment=(), usb=(), interest-cohort=()
   Cross-Origin-Opener-Policy: same-origin
   X-Frame-Options: DENY
+  Cache-Control: public, max-age=0, must-revalidate
 
+# Only the files whose names never change get a long life. styles.css and
+# script.js deliberately do NOT, because their names carry no hash: an earlier
+# attempt used a `/*.css` rule, which Pages ignores because it only matches a
+# wildcard at the end of a path. The default of four hours applied instead, and
+# a deploy went out with new markup and a four hour old stylesheet. The page
+# rendered unstyled and nothing in the deploy log said so.
 /images/*
   Cache-Control: public, max-age=31536000, immutable
 
-/*.css
-  Cache-Control: public, max-age=3600
-
-/*.js
-  Cache-Control: public, max-age=3600
+/fonts/*
+  Cache-Control: public, max-age=31536000, immutable

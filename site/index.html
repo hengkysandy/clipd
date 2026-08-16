@@ -8,8 +8,8 @@
 <link rel="canonical" href="https://clipd.hengkysandy.com/">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="images/icon.png">
-<meta name="theme-color" content="#faf9fc" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#100f17" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f7f6fb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b0b12" media="(prefers-color-scheme: dark)">
 
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://clipd.hengkysandy.com/">
@@ -24,8 +24,10 @@
 <meta name="twitter:description" content="An open source clipboard history manager for macOS. Free, auditable, and it syncs through a Cloudflare R2 bucket you own.">
 <meta name="twitter:image" content="https://clipd.hengkysandy.com/og.png">
 
-<link rel="stylesheet" href="styles.css">
-<script src="script.js" defer></script>
+<link rel="preload" href="fonts/plex-mono-600.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/plex-sans-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
 
 <script type="application/ld+json">
 {
@@ -34,7 +36,6 @@
   "name": "Clipd",
   "applicationCategory": "UtilitiesApplication",
   "operatingSystem": "macOS 15 or later",
-  "softwareVersion": "0.7.0",
   "license": "https://opensource.org/licenses/MIT",
   "url": "https://clipd.hengkysandy.com/",
   "downloadUrl": "https://github.com/hengkysandy/clipd/releases/latest",
@@ -47,10 +48,7 @@
 
 <header class="masthead" id="masthead">
   <div class="wrap masthead__inner">
-    <a class="brand" href="#top">
-      <img src="images/icon.png" alt="" width="26" height="26">
-      Clipd
-    </a>
+    <a class="brand" href="#top"><img src="images/icon.png" alt="" width="25" height="25">Clipd</a>
     <nav class="navlinks" aria-label="Sections">
       <a href="#features">Features</a>
       <a href="#privacy">Privacy</a>
@@ -63,74 +61,148 @@
 
 <main id="top">
 
-  <!-- Hero -->
+  <!-- Hero: a working miniature of the app, not a picture of one -->
   <section class="hero">
-    <div class="wrap">
-      <div class="hero__lede">
-        <p class="eyebrow">Clipboard history for macOS</p>
-        <h1>Everything you copy, one keystroke away.</h1>
-        <p class="hero__sub">
-          Clipd records what you copy, searches all of it, and pastes what you pick
-          back into the app you were using. It is free, the source is public, and
-          it syncs through a storage bucket that belongs to you.
-        </p>
-        <div class="hero__actions">
-          <a class="btn btn--primary" href="https://github.com/hengkysandy/clipd/releases/latest">Download for macOS</a>
-          <a class="btn btn--ghost" href="https://github.com/hengkysandy/clipd">Read the source</a>
+    <div class="wrap hero__lede">
+      <p class="eyebrow">Clipboard history for macOS</p>
+      <h1>Everything you copy,<br>one keystroke away.</h1>
+      <p class="hero__sub">
+        Clipd keeps what you copy, searches all of it, and pastes what you pick
+        back into the app you were using. Free, open source, and it syncs
+        through a bucket that belongs to you.
+      </p>
+      <div class="hero__actions">
+        <a class="btn btn--primary" href="https://github.com/hengkysandy/clipd/releases/latest">Download for macOS</a>
+        <a class="btn btn--ghost" href="https://github.com/hengkysandy/clipd">Read the source</a>
+      </div>
+      <p class="hero__meta">
+        <span>macOS 15+</span><span>Apple silicon and Intel</span><span>MIT</span><span>No account</span>
+      </p>
+    </div>
+
+    <div class="demo wrap" id="demo">
+      <div class="demo__editor">
+        <div class="demo__chrome">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="demo__file">SyncMerge.swift</span>
         </div>
-        <p class="hero__meta">
-          <span>v0.7.0</span>
-          <span>3.2 MB</span>
-          <span>macOS 15+</span>
-          <span>Apple silicon and Intel</span>
-          <span>MIT</span>
+        <pre class="demo__out" id="out"><code id="outCode"><span class="t-kw">func</span> planSync(mine: <span class="t-type">Record</span>, theirs: <span class="t-type">Record</span>) -&gt; <span class="t-type">SyncAction</span> {
+    <span class="t-kw">if</span> mine.updatedAt &gt; theirs.updatedAt { <span class="t-kw">return</span> .upload(mine.id) }
+    <span class="t-com">// Equal timestamps, and one side is a tombstone. Delete wins.</span>
+    <span class="t-kw">return</span> .nothing(mine.id)
+}</code><span class="caret" id="caret"></span></pre>
+        <p class="demo__hint" id="hint">
+          <span>Pick a card, or press <kbd data-key="1">1</kbd> to <kbd data-key="6">6</kbd>.</span>
+          <span>On your Mac it is <kbd data-key="Meta">⌘</kbd><kbd data-key="Shift">⇧</kbd><kbd data-key="v">V</kbd>, from anywhere.</span>
         </p>
       </div>
 
-      <div class="screen" id="screen">
-        <div class="screen__bar">
-          <svg class="screen__glyph" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <rect x="5" y="3" width="14" height="18" rx="3" stroke="currentColor" stroke-width="1.7"/>
-            <path d="M9 3.5h6M9 9h6M9 13h6M9 17h3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-          </svg>
-          <span>10:29</span>
+      <div class="strip">
+        <div class="strip__bar">
+          <span class="strip__search">Search clipboard history</span>
+          <span class="tab tab--on">Clipboard</span>
+          <span class="tab">Runbooks</span>
         </div>
-        <div class="screen__ghost screen__ghost--a"></div>
-        <div class="screen__ghost screen__ghost--b"></div>
-        <img class="screen__panel" src="images/panel.png" width="1800" height="438"
-             alt="The Clipd panel across the bottom of the screen, showing cards for a Swift snippet, an image, a JavaScript function, a Kubernetes YAML manifest, a Python function and a Markdown checklist.">
+        <ol class="cards" id="cards" role="listbox" aria-label="Clipboard history">
+
+          <li><button class="card" type="button" role="option" aria-selected="true" data-file="SyncMerge.swift">
+            <span class="card__head"><span class="card__lang">Swift</span><span class="card__age">15 seconds ago</span></span>
+            <pre class="card__body"><span class="t-kw">func</span> planSync(mine: <span class="t-type">Record</span>, theirs: <span class="t-type">Record</span>) -&gt; <span class="t-type">SyncAction</span> {
+    <span class="t-kw">if</span> mine.updatedAt &gt; theirs.updatedAt { <span class="t-kw">return</span> .upload(mine.id) }
+    <span class="t-com">// Equal timestamps, and one side is a tombstone. Delete wins.</span>
+    <span class="t-kw">return</span> .nothing(mine.id)
+}</pre>
+            <span class="card__foot">243 characters<span class="card__num">1</span></span>
+          </button></li>
+
+          <li><button class="card" type="button" role="option" aria-selected="false" data-file="deployment.yaml">
+            <span class="card__head"><span class="card__lang">YAML</span><span class="card__age">2 minutes ago</span></span>
+            <pre class="card__body"><span class="t-type">apiVersion</span>: apps/v1
+<span class="t-type">kind</span>: Deployment
+<span class="t-type">metadata</span>:
+  <span class="t-type">name</span>: api
+<span class="t-type">spec</span>:
+  <span class="t-type">replicas</span>: <span class="t-num">2</span>
+  <span class="t-type">template</span>:
+    <span class="t-type">spec</span>:
+      <span class="t-type">containers</span>:
+        - <span class="t-type">image</span>: ghcr.io/example/api:<span class="t-num">1.4.2</span></pre>
+            <span class="card__foot">198 characters<span class="card__num">2</span></span>
+          </button></li>
+
+          <li><button class="card" type="button" role="option" aria-selected="false" data-file="history.ts">
+            <span class="card__head"><span class="card__lang">TypeScript</span><span class="card__age">6 minutes ago</span></span>
+            <pre class="card__body"><span class="t-kw">export async function</span> loadHistory(limit = <span class="t-num">500</span>) {
+  <span class="t-kw">const</span> rows = <span class="t-kw">await</span> db.query(
+    <span class="t-str">"SELECT * FROM items WHERE deleted_at IS NULL"</span>,
+    [limit],
+  );
+  <span class="t-kw">return</span> rows.map(toItem);
+}</pre>
+            <span class="card__foot">186 characters<span class="card__num">3</span></span>
+          </button></li>
+
+          <li><button class="card" type="button" role="option" aria-selected="false" data-file="query.sql">
+            <span class="card__head"><span class="card__lang">SQL</span><span class="card__age">18 minutes ago</span></span>
+            <pre class="card__body"><span class="t-kw">SELECT</span> id, name, created_at
+<span class="t-kw">FROM</span> projects
+<span class="t-kw">WHERE</span> owner_id = <span class="t-num">$1</span>
+  <span class="t-kw">AND</span> archived_at <span class="t-kw">IS NULL</span>
+<span class="t-kw">ORDER BY</span> created_at <span class="t-kw">DESC</span>
+<span class="t-kw">LIMIT</span> <span class="t-num">20</span>;</pre>
+            <span class="card__foot">124 characters<span class="card__num">4</span></span>
+          </button></li>
+
+          <li><button class="card" type="button" role="option" aria-selected="false" data-file="RELEASE.md">
+            <span class="card__head"><span class="card__lang">Markdown</span><span class="card__age">1 hour ago</span></span>
+            <pre class="card__body"><span class="t-kw">## Release checklist</span>
+
+- [x] Run both test suites
+- [x] Bump the version in <span class="t-str">`project.yml`</span>
+- [ ] Build the DMG with <span class="t-str">`./app dmg`</span>
+- [ ] Clear quarantine on the second Mac</pre>
+            <span class="card__foot">171 characters<span class="card__num">5</span></span>
+          </button></li>
+
+          <li><button class="card" type="button" role="option" aria-selected="false" data-file="note.txt">
+            <span class="card__head"><span class="card__lang">Text</span><span class="card__age">3 hours ago</span></span>
+            <pre class="card__body">Standup moved to Thursday 10:00.
+Agenda is in the shared doc, please
+add your items before Wednesday
+evening.</pre>
+            <span class="card__foot">109 characters<span class="card__num">6</span></span>
+          </button></li>
+
+        </ol>
       </div>
-      <p class="screen__caption">Press <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>V</kbd> anywhere. The panel arrives over whatever you were doing.</p>
     </div>
   </section>
 
   <!-- The argument -->
-  <section class="section section--tinted section--line">
+  <section class="section">
     <div class="wrap">
       <div class="section__head">
-        <p class="eyebrow">Why this one</p>
-        <h2>A clipboard manager sees your passwords. So it should not ask for your trust.</h2>
+        <span class="eyebrow">Why this one</span>
+        <h2>A clipboard manager sees your passwords.<br>So it should not ask for your trust.</h2>
         <p>
           Clipd reads everything you copy, which on a normal working day includes
           API tokens, private keys and passwords. That is a lot to hand to a
-          closed program run by a company you have never met. So Clipd is built
-          the other way round: nothing to trust, because there is nothing hidden
-          and nowhere for your data to go that you do not already own.
+          closed program run by a company you have never met. So it is built the
+          other way round: nothing to trust, because nothing is hidden and there
+          is nowhere for your data to go that you do not already own.
         </p>
       </div>
 
-      <div class="pillars">
-        <article class="pillar">
-          <span class="pillar__num">01</span>
-          <h3>Free, with no catch attached</h3>
+      <div class="claims">
+        <article class="claim">
+          <h3>Free, with no catch</h3>
           <p>
-            No subscription, no trial, no account to create, no telemetry and no
-            analytics. There is no company behind Clipd and no server anyone is
-            paying to keep running.
+            No subscription, no trial, no account, no telemetry, no analytics.
+            There is no company behind Clipd and no server anyone is paying to
+            keep running.
           </p>
         </article>
-        <article class="pillar">
-          <span class="pillar__num">02</span>
+        <article class="claim">
           <h3>Open source and auditable</h3>
           <p>
             MIT licensed and public. The repository records not only what was
@@ -138,22 +210,20 @@
             assumptions that turned out to be false when they were tested.
           </p>
         </article>
-        <article class="pillar">
-          <span class="pillar__num">03</span>
+        <article class="claim">
           <h3>Your bucket, your data</h3>
           <p>
-            Sync goes through a Cloudflare R2 bucket in your own account. There is
-            no Clipd server in the middle. Stop using the app tomorrow and your
-            data has not moved anywhere.
+            Sync goes through a Cloudflare R2 bucket in your own account. There
+            is no Clipd server in the middle. Stop using the app tomorrow and
+            your data has not moved anywhere.
           </p>
         </article>
-        <article class="pillar">
-          <span class="pillar__num">04</span>
+        <article class="claim">
           <h3>Encrypted before it leaves</h3>
           <p>
             Items are sealed with AES-GCM using a key derived from a passphrase
             you type on both Macs. Cloudflare stores ciphertext it cannot read.
-            The local database is SQLCipher, with its key in the macOS Keychain.
+            The local database is SQLCipher, keyed from the macOS Keychain.
           </p>
         </article>
       </div>
@@ -164,39 +234,39 @@
   <section class="section" id="features">
     <div class="wrap">
       <div class="section__head">
-        <p class="eyebrow">What it does</p>
+        <span class="eyebrow">What it does</span>
         <h2>Built for people who copy code all day.</h2>
       </div>
 
-      <article class="feature">
+      <article class="split">
         <div>
           <h3>Copied code keeps its colours</h3>
           <p>
-            Paste a function, a manifest or a query into Clipd and the card shows
-            it the way your editor would, with its indentation and its syntax
-            colours intact.
+            Copy a function, a manifest or a query and the card shows it the way
+            your editor would, with its indentation and its syntax colours
+            intact.
           </p>
           <p>
             The language is worked out from the text itself, so nothing has to be
-            tagged by hand: Swift, TypeScript, JavaScript, Python, Go, Rust, Ruby,
-            Bash, SQL, JSON, YAML and Markdown. Prose stays plain, because
+            tagged by hand: Swift, TypeScript, JavaScript, Python, Go, Rust,
+            Ruby, Bash, SQL, JSON, YAML and Markdown. Prose stays plain, because
             colouring an ordinary email is worse than missing a snippet.
           </p>
         </div>
-        <div class="feature__media">
+        <div class="shot">
           <img src="images/code.png" width="1400" height="380" loading="lazy"
                alt="Four Clipd cards side by side, labelled Swift, Image, JavaScript and YAML, each showing syntax coloured code.">
         </div>
       </article>
 
-      <article class="feature feature--flip">
+      <article class="split split--flip">
         <div>
           <h3>Name things, and find them by the name</h3>
           <p>
             Give any item a name, and search matches the name as well as the
-            content. That means you can find something by a word that is not in it
-            at all: call a block of YAML "staging deploy" and that is what you type
-            three weeks later.
+            content. You can find something by a word that is not in it at all:
+            call a block of YAML "staging deploy" and that is what you type three
+            weeks later.
           </p>
           <p>
             Pinboards group the things you keep coming back to. Retention decides
@@ -204,7 +274,7 @@
             keep it forever.
           </p>
         </div>
-        <div class="feature__media">
+        <div class="shot">
           <img src="images/menu.png" width="1200" height="662" loading="lazy"
                alt="A right click menu open on a Clipd card, offering Paste to TextEdit, Copy, Name Item, Pin and Delete.">
         </div>
@@ -213,15 +283,15 @@
   </section>
 
   <!-- Keyboard -->
-  <section class="section section--line">
+  <section class="section">
     <div class="wrap keys">
-      <div class="keys__lede">
-        <p class="eyebrow">Keyboard</p>
-        <h2>It never asks you to reach for the mouse.</h2>
-        <p class="muted">
-          The panel opens over whatever you were doing, including fullscreen apps.
-          Type to filter, press Enter, and the item lands in the app you came
-          from. Clipd has no Dock icon and no window in your way.
+      <div>
+        <span class="eyebrow">Keyboard</span>
+        <h2>The whole app is nine keys.</h2>
+        <p class="muted prose">
+          The panel opens over whatever you were doing, including fullscreen
+          apps. Type to filter, press Enter, and the item lands in the app you
+          came from. No Dock icon, no window in your way.
         </p>
       </div>
       <ul class="shortcuts">
@@ -235,55 +305,62 @@
   </section>
 
   <!-- Privacy -->
-  <section class="section section--tinted section--line" id="privacy">
+  <section class="section section--sunk" id="privacy">
     <div class="wrap">
       <div class="section__head">
-        <p class="eyebrow">Privacy</p>
-        <h2>Four independent layers, because one is not enough.</h2>
+        <span class="eyebrow">Privacy</span>
+        <h2>Four layers, because one is not enough.</h2>
         <p>
-          Each layer catches something the others miss. They are listed in the
-          order they run, and the last one is there for whatever gets past the
-          first three.
+          They are numbered because they run in that order, and each catches
+          something the one before it misses.
         </p>
       </div>
 
-      <div class="layers">
-        <article class="layer">
+      <ol class="layers">
+        <li class="layer">
           <span class="layer__tag">Layer 0</span>
-          <h3>The confidential marker</h3>
-          <p>
-            Clipd honours <code>org.nspasteboard.ConcealedType</code>, the flag
-            password managers set on a copy they would rather nobody kept.
-          </p>
-        </article>
-        <article class="layer">
+          <div>
+            <h3>The confidential marker</h3>
+            <p>
+              Clipd honours the <code>ConcealedType</code> flag that password
+              managers set on a copy they would rather nobody kept.
+            </p>
+          </div>
+        </li>
+        <li class="layer">
           <span class="layer__tag">Layer 1</span>
-          <h3>Deny-list by app</h3>
-          <p>
-            Copies from named apps are never recorded. It ships pre-filled with
-            Passwords.app, Keychain Access, Bitwarden and 1Password, and any item
-            offers "never save from this app".
-          </p>
-        </article>
-        <article class="layer">
+          <div>
+            <h3>Deny-list by app</h3>
+            <p>
+              Copies from named apps are never recorded. It ships pre-filled with
+              Passwords.app, Keychain Access, Bitwarden and 1Password, and any
+              item offers "never save from this app".
+            </p>
+          </div>
+        </li>
+        <li class="layer">
           <span class="layer__tag">Layer 2</span>
-          <h3>The auto-clear rule</h3>
-          <p>
-            If the clipboard is wiped shortly after something was copied, that
-            item is deleted retroactively, payload and all. Wiping the clipboard
-            a minute later is what password managers do.
-          </p>
-        </article>
-        <article class="layer">
+          <div>
+            <h3>The auto-clear rule</h3>
+            <p>
+              If the clipboard is wiped shortly after something was copied, that
+              item is deleted retroactively, payload and all. Wiping the
+              clipboard a minute later is what password managers do.
+            </p>
+          </div>
+        </li>
+        <li class="layer">
           <span class="layer__tag">Layer 3</span>
-          <h3>Encrypted at rest</h3>
-          <p>
-            The database is SQLCipher and the key lives in the macOS Keychain.
-            Image payloads are encrypted on disk too, rather than sitting in the
-            clear beside an encrypted database.
-          </p>
-        </article>
-      </div>
+          <div>
+            <h3>Encrypted at rest</h3>
+            <p>
+              The database is SQLCipher and the key lives in the macOS Keychain.
+              Image payloads are encrypted on disk too, rather than sitting in
+              the clear beside an encrypted database.
+            </p>
+          </div>
+        </li>
+      </ol>
 
       <div class="finding">
         <h3>The reason there are four</h3>
@@ -294,14 +371,14 @@
           copy. Bitwarden does set the marker. Apple does not.
         </p>
         <p>
-          A clipboard manager that relied on the marker alone, as the feature name
-          "ignore confidential content" suggests, would write your Apple passwords
-          straight into its database. That single measurement is why layer 1 ships
-          pre-filled and why layer 2 exists at all.
+          A clipboard manager relying on that marker alone, as the feature name
+          "ignore confidential content" suggests, would write your Apple
+          passwords straight into its database. That one measurement is why
+          layer 1 ships pre-filled and why layer 2 exists at all.
         </p>
         <p class="quiet">
-          You can check this yourself. It is in the repository, along with the raw
-          pasteboard dump it came from.
+          You can check this yourself. It is in the repository, along with the
+          raw pasteboard dump it came from.
         </p>
       </div>
     </div>
@@ -311,22 +388,22 @@
   <section class="section" id="sync">
     <div class="wrap">
       <div class="section__head">
-        <p class="eyebrow">Sync</p>
+        <span class="eyebrow">Sync</span>
         <h2>Two Macs, one bucket, no middleman.</h2>
         <p>
-          Sync is optional. Clipd works fully offline and sends nothing anywhere
-          until you enter R2 credentials yourself. When you do, this is the whole
-          of it.
+          Optional. Clipd works fully offline and sends nothing anywhere until
+          you enter R2 credentials yourself. When you do, this is the whole of
+          it.
         </p>
       </div>
 
-      <div class="flow">
-        <article class="flow__step">
+      <ol class="flow">
+        <li class="flow__step">
           <span class="flow__label">On your Mac</span>
-          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" aria-hidden="true">
-            <rect x="3.5" y="7.5" width="33" height="21" rx="3" stroke="currentColor" stroke-width="1.6" opacity=".55"/>
-            <path d="M13 33h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" opacity=".55"/>
-            <rect x="14" y="14" width="12" height="9" rx="2" fill="currentColor" opacity=".18"/>
+          <svg width="34" height="34" viewBox="0 0 40 40" fill="none" aria-hidden="true">
+            <rect x="3.5" y="7.5" width="33" height="21" rx="3" stroke="currentColor" stroke-width="1.6" opacity=".5"/>
+            <path d="M13 33h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" opacity=".5"/>
+            <rect x="14" y="14" width="12" height="9" rx="2" fill="currentColor" opacity=".2"/>
             <path d="M17 14v-2.5a3 3 0 0 1 6 0V14" stroke="currentColor" stroke-width="1.6"/>
           </svg>
           <h3>Sealed before it moves</h3>
@@ -335,25 +412,25 @@
             passphrase through PBKDF2-SHA256 at 210,000 iterations, and never
             leaves the Mac.
           </p>
-        </article>
-        <article class="flow__step">
+        </li>
+        <li class="flow__step">
           <span class="flow__label">In your account</span>
-          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" aria-hidden="true">
-            <path d="M11 29a7 7 0 0 1-.6-13.97A9.5 9.5 0 0 1 28.6 16.4 6.3 6.3 0 0 1 29 29H11Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" opacity=".55"/>
+          <svg width="34" height="34" viewBox="0 0 40 40" fill="none" aria-hidden="true">
+            <path d="M11 29a7 7 0 0 1-.6-13.97A9.5 9.5 0 0 1 28.6 16.4 6.3 6.3 0 0 1 29 29H11Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" opacity=".5"/>
             <path d="M16 22.5h8M16 25.5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
           </svg>
           <h3>Stored where you keep it</h3>
           <p>
             The ciphertext lands in a Cloudflare R2 bucket in your own account.
-            Cloudflare cannot read it, and neither can anyone else who has not got
-            your passphrase.
+            Cloudflare cannot read it, and neither can anyone without your
+            passphrase.
           </p>
-        </article>
-        <article class="flow__step">
+        </li>
+        <li class="flow__step">
           <span class="flow__label">On your other Mac</span>
-          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" aria-hidden="true">
-            <rect x="3.5" y="7.5" width="33" height="21" rx="3" stroke="currentColor" stroke-width="1.6" opacity=".55"/>
-            <path d="M13 33h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" opacity=".55"/>
+          <svg width="34" height="34" viewBox="0 0 40 40" fill="none" aria-hidden="true">
+            <rect x="3.5" y="7.5" width="33" height="21" rx="3" stroke="currentColor" stroke-width="1.6" opacity=".5"/>
+            <path d="M13 33h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" opacity=".5"/>
             <path d="M20 12v10m0 0 3.6-3.6M20 22l-3.6-3.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
           <h3>Decrypted and merged</h3>
@@ -362,21 +439,16 @@
             than an absence, so removing something on one Mac does not bring it
             back from the other.
           </p>
-        </article>
-      </div>
-
-      <p class="prose muted">
-        Cloudflare's free tier covers a personal clipboard history comfortably.
-        There is no other backend, and there is no backend picker in settings.
-      </p>
+        </li>
+      </ol>
     </div>
   </section>
 
   <!-- Install -->
-  <section class="section section--tinted section--line" id="install">
+  <section class="section section--sunk" id="install">
     <div class="wrap">
       <div class="section__head">
-        <p class="eyebrow">Install</p>
+        <span class="eyebrow">Install</span>
         <h2>Four steps, then it is out of your way.</h2>
       </div>
 
@@ -385,7 +457,7 @@
           <div>
             <h3>Download and drag it in</h3>
             <p>Open the DMG and drag Clipd into your Applications folder.</p>
-            <p class="mt-s"><a class="btn btn--ghost btn--sm" href="https://github.com/hengkysandy/clipd/releases/latest">Get the latest DMG</a></p>
+            <p class="mt-s"><a class="btn btn--ghost btn--sm" href="https://github.com/hengkysandy/clipd/releases/latest">Get the latest release</a></p>
           </div>
         </li>
         <li>
@@ -422,57 +494,11 @@
           <div>
             <h3>Press the shortcut</h3>
             <p>
-              <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>V</kbd> from anywhere. Clipd lives in
-              the menu bar, with no Dock icon and no window in your way.
-            </p>
-          </div>
-        </li>
-      </ol>
-    </div>
-  </section>
-
-  <!-- Sync setup -->
-  <section class="section">
-    <div class="wrap">
-      <div class="section__head">
-        <p class="eyebrow">Optional</p>
-        <h2>Setting up sync</h2>
-        <p>Only if you want two Macs to share a history. Skip it and nothing ever leaves your machine.</p>
-      </div>
-
-      <ol class="steps">
-        <li>
-          <div>
-            <h3>Create an R2 bucket</h3>
-            <p>In your own Cloudflare account. Any name and any region will do.</p>
-          </div>
-        </li>
-        <li>
-          <div>
-            <h3>Create an API token scoped to that one bucket</h3>
-            <p>
-              Object read and write, on that single bucket, and nothing else. A
-              token that can list your whole account is more access than Clipd
-              needs, and more than you should give it.
-            </p>
-          </div>
-        </li>
-        <li>
-          <div>
-            <h3>Paste the four values into Settings</h3>
-            <p>
-              Account ID, access key ID, secret access key and bucket name. They
-              go into the macOS Keychain, never into a file.
-            </p>
-          </div>
-        </li>
-        <li>
-          <div>
-            <h3>Set the same passphrase on both Macs</h3>
-            <p>
-              This is the key to everything in the bucket. Clipd cannot recover
-              it for you, and neither can Cloudflare, because neither of them has
-              ever had it.
+              <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>V</kbd> from anywhere. To share a
+              history with a second Mac, create an R2 bucket, make an API token
+              scoped to that one bucket with object read and write, paste the
+              four values into Settings, and set the same passphrase on both
+              machines.
             </p>
           </div>
         </li>
@@ -481,31 +507,31 @@
   </section>
 
   <!-- Honesty -->
-  <section class="section section--tinted section--line" id="caveats">
+  <section class="section" id="caveats">
     <div class="wrap">
       <div class="section__head">
-        <p class="eyebrow">Before you install</p>
-        <h2>What you should know</h2>
+        <span class="eyebrow">Before you install</span>
+        <h2>What you should know.</h2>
         <p>
           All of this is in the repository anyway. It is here because you should
           not have to go looking for it.
         </p>
       </div>
 
-      <div class="caveats">
-        <div class="caveat">
+      <ul class="caveats">
+        <li class="caveat">
           <span class="caveat__mark">!</span>
           <div>
             <h3>It is not notarised</h3>
             <p>
-              A free Apple Developer account cannot notarise anything. That is why
-              step 2 of the install exists. If you would rather not trust a
+              A free Apple Developer account cannot notarise anything. That is
+              why step two of the install exists. If you would rather not trust a
               downloaded binary at all, build it from source, which is four
               commands.
             </p>
           </div>
-        </div>
-        <div class="caveat">
+        </li>
+        <li class="caveat">
           <span class="caveat__mark">!</span>
           <div>
             <h3>It is pre-1.0</h3>
@@ -515,8 +541,8 @@
               edges, and please report them.
             </p>
           </div>
-        </div>
-        <div class="caveat">
+        </li>
+        <li class="caveat">
           <span class="caveat__mark">!</span>
           <div>
             <h3>Browser password managers are a known gap</h3>
@@ -527,8 +553,8 @@
               the encrypted database and deleting the item cover that case.
             </p>
           </div>
-        </div>
-        <div class="caveat">
+        </li>
+        <li class="caveat">
           <span class="caveat__mark">!</span>
           <div>
             <h3>macOS 15 or later</h3>
@@ -538,23 +564,20 @@
               compatibility paths nobody is currently running.
             </p>
           </div>
-        </div>
-      </div>
+        </li>
+      </ul>
     </div>
   </section>
 
-  <!-- Build from source -->
+  <!-- Build -->
   <section class="section">
     <div class="wrap">
       <div class="section__head">
-        <p class="eyebrow">For the sceptical</p>
-        <h2>Build it yourself and skip the binary entirely.</h2>
-        <p>
-          The most honest thing an app like this can offer. You need Xcode 26 and
-          a free Apple account.
-        </p>
+        <span class="eyebrow">For the sceptical</span>
+        <h2>Build it yourself and skip the binary.</h2>
+        <p>The most honest thing an app like this can offer. You need Xcode 26 and a free Apple account.</p>
       </div>
-      <div class="snippet snippet--wide">
+      <div class="snippet">
         <code>git clone https://github.com/hengkysandy/clipd.git
 cd clipd
 brew install xcodegen
@@ -574,6 +597,7 @@ brew install xcodegen
     </div>
   </section>
 
+  <p class="sr-only" id="status" role="status" aria-live="polite"></p>
 </main>
 
 <footer class="footer">
