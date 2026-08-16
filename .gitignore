@@ -14,3 +14,6 @@ DerivedData/
 
 # Staging directory for iconutil. Rebuilt by ./app icons.
 art/AppIcon.iconset/
+
+# Cloudflare Pages deploy state. The site source is committed, this is not.
+.wrangler/

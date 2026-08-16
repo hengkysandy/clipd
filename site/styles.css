@@ -1,0 +1,694 @@
+/* Clipd landing page.
+
+   Palette and type are derived from the app itself: a dark translucent panel
+   that appears over whatever you were doing, full of monospaced code cards.
+   The neutrals carry a violet bias taken from the app icon rather than being
+   pure grey, and the mono face does all the labelling work because that is
+   what the product's own surface looks like.
+
+   Light is the base theme. Dark is redefined at token level in two places, so
+   it works both for a viewer whose system is dark and for one who has stamped
+   an explicit choice on the document. No colour is ever declared only inside a
+   media query. */
+
+:root {
+  --ground: #faf9fc;
+  --surface: #ffffff;
+  --surface-2: #f2f0f8;
+  --line: #e4e0ef;
+  --line-strong: #cfc9e2;
+  --text: #16141f;
+  --muted: #605a72;
+  --accent: #6741e8;
+  --accent-quiet: #efeaff;
+  --accent-ink: #ffffff;
+  --good: #1f8f5f;
+  --warn: #9a6412;
+  --shadow: 0 1px 2px rgba(22, 20, 31, .06), 0 12px 32px rgba(22, 20, 31, .07);
+  --shadow-lift: 0 2px 4px rgba(22, 20, 31, .08), 0 24px 60px rgba(22, 20, 31, .12);
+
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+
+  --step--1: .8125rem;
+  --step-0: 1rem;
+  --step-1: 1.1875rem;
+  --step-2: 1.4375rem;
+  --step-3: 1.875rem;
+  --step-4: 2.5rem;
+  --step-5: 3.5rem;
+
+  --col: 1120px;
+  --prose: 62ch;
+  --radius: 14px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #100f17;
+    --surface: #1a1824;
+    --surface-2: #232031;
+    --line: #2c2840;
+    --line-strong: #423c5c;
+    --text: #eeebf6;
+    --muted: #9992ad;
+    --accent: #9b83ff;
+    --accent-quiet: #221d3a;
+    --accent-ink: #14101f;
+    --good: #52c795;
+    --warn: #e0a94f;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 12px 32px rgba(0, 0, 0, .35);
+    --shadow-lift: 0 2px 4px rgba(0, 0, 0, .45), 0 24px 60px rgba(0, 0, 0, .5);
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground: #100f17;
+  --surface: #1a1824;
+  --surface-2: #232031;
+  --line: #2c2840;
+  --line-strong: #423c5c;
+  --text: #eeebf6;
+  --muted: #9992ad;
+  --accent: #9b83ff;
+  --accent-quiet: #221d3a;
+  --accent-ink: #14101f;
+  --good: #52c795;
+  --warn: #e0a94f;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 12px 32px rgba(0, 0, 0, .35);
+  --shadow-lift: 0 2px 4px rgba(0, 0, 0, .45), 0 24px 60px rgba(0, 0, 0, .5);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: var(--step-0);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+img { max-width: 100%; height: auto; display: block; }
+
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+h1, h2, h3 { text-wrap: balance; margin: 0; line-height: 1.15; letter-spacing: -.02em; }
+p { margin: 0; }
+
+.wrap {
+  width: min(100% - 2.5rem, var(--col));
+  margin-inline: auto;
+}
+
+.prose { max-width: var(--prose); }
+
+/* Grid and flex children default to min-width: auto, which means a child wide
+   enough to overflow makes its parent that wide too. That is how a code block
+   with `white-space: pre` ended up dragging the whole page sideways on a
+   phone, despite the block having its own overflow-x. Measured at 375px: the
+   document scrolled to 577px. */
+.feature > *,
+.keys > *,
+.steps > li > div,
+.snippet { min-width: 0; }
+
+.muted { color: var(--muted); }
+.mt-s { margin-top: .85rem; }
+.mt-m { margin-top: 1.25rem; }
+
+/* ---------- shared type devices ---------- */
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: var(--step--1);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 .75rem;
+}
+
+kbd {
+  font-family: var(--mono);
+  font-size: .8em;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: .15em .4em;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: .875em;
+  background: var(--surface-2);
+  border-radius: 4px;
+  padding: .1em .35em;
+}
+
+/* ---------- header ---------- */
+
+.masthead {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: color-mix(in srgb, var(--ground) 82%, transparent);
+  backdrop-filter: saturate(160%) blur(14px);
+  border-bottom: 1px solid transparent;
+  transition: border-color .2s ease;
+}
+
+.masthead[data-scrolled="true"] { border-bottom-color: var(--line); }
+
+.masthead__inner {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  height: 60px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  font-weight: 600;
+  letter-spacing: -.02em;
+  color: var(--text);
+  text-decoration: none;
+  margin-right: auto;
+}
+
+.brand img { width: 26px; height: 26px; border-radius: 6px; }
+
+.navlinks {
+  display: flex;
+  gap: 1.4rem;
+  font-size: var(--step--1);
+}
+
+.navlinks a { color: var(--muted); text-decoration: none; }
+.navlinks a:hover { color: var(--text); }
+
+/* Five section links do not fit beside the wordmark on a phone, and a nav that
+   overflows makes the whole page scroll sideways. Below this width only the
+   source link survives, which is the one that cannot be reached by scrolling
+   down the page. */
+@media (max-width: 46rem) {
+  .navlinks a:not(.navlinks__keep) { display: none; }
+}
+
+/* ---------- buttons ---------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .7rem 1.15rem;
+  border-radius: 10px;
+  font-size: var(--step-0);
+  font-weight: 550;
+  text-decoration: none;
+  border: 1px solid transparent;
+  transition: transform .15s ease, background-color .15s ease, border-color .15s ease;
+}
+
+.btn--primary { background: var(--accent); color: var(--accent-ink); }
+.btn--primary:hover { transform: translateY(-1px); }
+
+.btn--ghost { border-color: var(--line-strong); color: var(--text); background: transparent; }
+.btn--ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+.btn--sm { padding: .45rem .8rem; font-size: var(--step--1); }
+
+/* ---------- hero ---------- */
+
+.hero { padding: clamp(3rem, 8vw, 6rem) 0 0; }
+
+.hero__lede { max-width: 40rem; }
+
+.hero h1 {
+  font-size: clamp(2.25rem, 6vw, var(--step-5));
+  font-weight: 600;
+  margin-bottom: 1.1rem;
+}
+
+.hero__sub {
+  font-size: var(--step-1);
+  color: var(--muted);
+  max-width: 34rem;
+}
+
+.hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .75rem;
+  margin-top: 2rem;
+}
+
+.hero__meta {
+  font-family: var(--mono);
+  font-size: var(--step--1);
+  color: var(--muted);
+  margin-top: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem .75rem;
+}
+
+.hero__meta span::after { content: " ·"; opacity: .5; }
+.hero__meta span:last-child::after { content: ""; }
+
+/* The simulated Mac screen. The panel really does sit flush to the bottom
+   edge of the display at roughly this proportion, so the mock is to scale
+   rather than decorative. */
+
+.screen {
+  position: relative;
+  margin-top: clamp(2.5rem, 6vw, 4.5rem);
+  aspect-ratio: 16 / 10;
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-lift);
+  background:
+    radial-gradient(120% 90% at 18% 8%, #6d4bd6 0%, transparent 55%),
+    radial-gradient(100% 80% at 88% 20%, #2f6fd0 0%, transparent 50%),
+    linear-gradient(165deg, #241d45 0%, #14121f 100%);
+  isolation: isolate;
+}
+
+.screen__bar {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 1rem;
+  padding-inline: 1rem;
+  background: rgba(10, 8, 18, .38);
+  backdrop-filter: blur(8px);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: rgba(255, 255, 255, .72);
+}
+
+.screen__glyph { width: 13px; height: 13px; opacity: .95; }
+
+/* Soft shapes standing in for the windows you were working in. Blurred on
+   purpose: the point is that the panel arrives over your work, not what the
+   work was. */
+.screen__ghost {
+  position: absolute;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .045);
+  border: 1px solid rgba(255, 255, 255, .06);
+  filter: blur(1.2px);
+}
+
+.screen__ghost--a { left: 10%; top: 20%; width: 38%; height: 34%; }
+.screen__ghost--b { left: 44%; top: 28%; width: 40%; height: 32%; }
+
+.screen__panel {
+  position: absolute;
+  inset: auto 0 0;
+  width: 100%;
+  display: block;
+  box-shadow: 0 -18px 50px rgba(0, 0, 0, .5);
+}
+
+.screen__caption {
+  margin: .9rem 0 0;
+  font-family: var(--mono);
+  font-size: var(--step--1);
+  color: var(--muted);
+  text-align: center;
+}
+
+/* ---------- section frame ---------- */
+
+.section { padding: clamp(4rem, 9vw, 7rem) 0; }
+.section--tinted { background: var(--surface-2); }
+.section--line { border-top: 1px solid var(--line); }
+
+.section__head { margin-bottom: 2.75rem; }
+
+.section__head h2 {
+  font-size: clamp(1.75rem, 4vw, var(--step-4));
+  font-weight: 600;
+}
+
+.section__head p {
+  color: var(--muted);
+  margin-top: .9rem;
+  max-width: var(--prose);
+}
+
+/* ---------- the argument ---------- */
+
+.pillars {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+}
+
+.pillar {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  box-shadow: var(--shadow);
+}
+
+.pillar h3 {
+  font-size: var(--step-1);
+  font-weight: 600;
+  margin-bottom: .6rem;
+}
+
+.pillar p { color: var(--muted); font-size: var(--step--1); line-height: 1.65; }
+
+.pillar__num {
+  font-family: var(--mono);
+  font-size: var(--step--1);
+  color: var(--accent);
+  display: block;
+  margin-bottom: .9rem;
+}
+
+/* ---------- feature rows ---------- */
+
+.feature {
+  display: grid;
+  gap: clamp(1.5rem, 4vw, 3.5rem);
+  align-items: center;
+  grid-template-columns: 1fr;
+}
+
+.feature + .feature { margin-top: clamp(3rem, 7vw, 5rem); }
+
+@media (min-width: 62rem) {
+  .feature { grid-template-columns: 5fr 7fr; }
+  .feature--flip > .feature__media { order: -1; }
+}
+
+.feature h3 {
+  font-size: var(--step-2);
+  font-weight: 600;
+  margin-bottom: .9rem;
+}
+
+.feature p { color: var(--muted); }
+.feature p + p { margin-top: .8rem; }
+
+.feature__media {
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  background: var(--surface);
+}
+
+/* ---------- keyboard band ---------- */
+
+.keys {
+  display: grid;
+  gap: clamp(2rem, 5vw, 4rem);
+  align-items: start;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 62rem) {
+  .keys { grid-template-columns: 1fr 1fr; }
+}
+
+.keys__lede h2 {
+  font-size: clamp(1.75rem, 4vw, var(--step-4));
+  font-weight: 600;
+  margin-bottom: .9rem;
+}
+
+.keys__lede p { max-width: var(--prose); }
+
+.shortcuts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0;
+  font-size: var(--step--1);
+}
+
+.shortcuts li {
+  display: grid;
+  grid-template-columns: 9.5rem 1fr;
+  gap: .75rem;
+  align-items: baseline;
+  color: var(--muted);
+  padding: .75rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.shortcuts li:first-child { border-top: 1px solid var(--line); }
+
+.step__shot {
+  margin-top: 1.1rem;
+  max-width: 22rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+  background: var(--surface);
+}
+
+/* ---------- privacy layers ---------- */
+
+.layers {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  margin-bottom: 2.5rem;
+}
+
+.layer {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.35rem;
+  background: var(--surface);
+}
+
+.layer__tag {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: block;
+  margin-bottom: .7rem;
+}
+
+.layer h3 { font-size: var(--step-0); font-weight: 600; margin-bottom: .5rem; }
+.layer p { font-size: var(--step--1); color: var(--muted); line-height: 1.6; }
+
+.finding {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-quiet);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  padding: 1.5rem 1.75rem;
+}
+
+.finding h3 { font-size: var(--step-1); font-weight: 600; margin-bottom: .7rem; }
+.finding p { color: var(--text); max-width: var(--prose); }
+.finding p + p { margin-top: .8rem; }
+.finding .quiet { color: var(--muted); font-size: var(--step--1); }
+
+/* ---------- sync flow ---------- */
+
+.flow {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  margin-bottom: 2rem;
+}
+
+.flow__step {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.35rem;
+  position: relative;
+}
+
+.flow__step svg { display: block; margin-bottom: 1rem; }
+.flow__step h3 { font-size: var(--step-0); font-weight: 600; margin-bottom: .5rem; }
+.flow__step p { font-size: var(--step--1); color: var(--muted); line-height: 1.6; }
+
+.flow__label {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  display: block;
+  margin-bottom: .8rem;
+}
+
+/* ---------- steps with code ---------- */
+
+.steps { counter-reset: step; list-style: none; margin: 0; padding: 0; display: grid; gap: 1.75rem; }
+
+.steps > li {
+  counter-increment: step;
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+.steps > li::before {
+  content: counter(step);
+  font-family: var(--mono);
+  font-size: var(--step--1);
+  color: var(--accent);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  width: 2rem;
+  height: 2rem;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+}
+
+.steps h3 { font-size: var(--step-0); font-weight: 600; margin-bottom: .35rem; }
+.steps p { color: var(--muted); font-size: var(--step--1); max-width: var(--prose); }
+
+.snippet {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  margin-top: .85rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: .6rem .6rem .6rem .9rem;
+}
+
+/* The code scrolls, not the whole block. Scrolling the block put the Copy
+   button off the right edge on a phone, where it was unreachable until you
+   had scrolled the very thing you wanted to copy. */
+.snippet code {
+  background: none;
+  padding: 0;
+  font-size: var(--step--1);
+  white-space: pre;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  display: block;
+  padding-bottom: .2rem;
+}
+
+.copy {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: .3rem .55rem;
+  cursor: pointer;
+  transition: color .15s ease, border-color .15s ease;
+}
+
+.snippet--wide { max-width: 44rem; }
+
+.copy:hover { color: var(--accent); border-color: var(--accent); }
+.copy[data-copied="true"] { color: var(--good); border-color: var(--good); }
+
+/* ---------- honesty ---------- */
+
+.caveats { display: grid; gap: 1.25rem; }
+
+.caveat {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1rem;
+  align-items: start;
+  border-top: 1px solid var(--line);
+  padding-top: 1.25rem;
+}
+
+.caveat:first-child { border-top: 0; padding-top: 0; }
+
+.caveat__mark {
+  font-family: var(--mono);
+  font-size: var(--step--1);
+  color: var(--warn);
+  line-height: 1.9;
+}
+
+.caveat h3 { font-size: var(--step-0); font-weight: 600; margin-bottom: .35rem; }
+.caveat p { color: var(--muted); font-size: var(--step--1); max-width: var(--prose); }
+
+/* ---------- footer ---------- */
+
+.footer {
+  border-top: 1px solid var(--line);
+  padding: 3rem 0 4rem;
+  font-size: var(--step--1);
+  color: var(--muted);
+}
+
+.footer__inner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem 2.5rem;
+  align-items: baseline;
+}
+
+.footer__links { display: flex; flex-wrap: wrap; gap: 1.25rem; margin-left: auto; }
+.footer a { color: var(--muted); text-decoration: none; }
+.footer a:hover { color: var(--accent); }
+
+/* ---------- motion ---------- */
+
+/* One orchestrated moment, and it is the app's own gesture: the panel slides up
+   from the bottom edge of the screen, exactly as it does when you press the
+   shortcut.
+
+   Pure CSS on purpose. An earlier version revealed every section with an
+   IntersectionObserver, which meant every section started at opacity 0 and
+   stayed there if the script did not run. A render at an unusual viewport
+   proved it: a whole section was blank. Content must never depend on
+   JavaScript to become visible. */
+
+@keyframes panel-up {
+  from { transform: translateY(100%); }
+  to { transform: none; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .screen__panel { animation: panel-up .9s cubic-bezier(.16, 1, .3, 1) .3s both; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .btn--primary:hover { transform: none; }
+}

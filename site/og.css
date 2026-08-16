@@ -1,0 +1,69 @@
+/* Only used to render og.png. Not linked from the site. */
+* { box-sizing: border-box; margin: 0; }
+body { width: 1200px; height: 630px; overflow: hidden; }
+
+.card {
+  position: relative;
+  width: 1200px;
+  height: 630px;
+  padding: 62px 64px;
+  background: linear-gradient(160deg, #241d45 0%, #100f17 62%);
+  color: #eeebf6;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  overflow: hidden;
+}
+
+.glow {
+  position: absolute;
+  inset: -20% 40% 40% -10%;
+  background: radial-gradient(circle at 30% 40%, rgba(124, 92, 255, .55), transparent 62%);
+  filter: blur(20px);
+}
+
+.row { display: flex; align-items: center; gap: 16px; position: relative; }
+.icon { width: 52px; height: 52px; border-radius: 12px; }
+.name { font-size: 30px; font-weight: 600; letter-spacing: -.02em; }
+
+h1 {
+  position: relative;
+  margin-top: 40px;
+  font-size: 62px;
+  font-weight: 600;
+  line-height: 1.08;
+  letter-spacing: -.03em;
+}
+
+p {
+  position: relative;
+  margin-top: 24px;
+  max-width: 640px;
+  font-size: 23px;
+  line-height: 1.5;
+  color: #a49dba;
+}
+
+.meta {
+  position: relative;
+  margin-top: 34px;
+  display: flex;
+  gap: 10px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 15px;
+  color: #cfc6ff;
+}
+
+.meta span {
+  border: 1px solid rgba(206, 197, 255, .3);
+  border-radius: 999px;
+  padding: 6px 14px;
+}
+
+.panel {
+  position: absolute;
+  right: -170px;
+  bottom: -40px;
+  width: 760px;
+  border-radius: 12px;
+  box-shadow: 0 30px 70px rgba(0, 0, 0, .55);
+  transform: rotate(-6deg);
+}

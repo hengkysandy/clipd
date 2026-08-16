@@ -13,6 +13,7 @@
 
 <p align="center">
   <a href="https://github.com/hengkysandy/clipd/releases"><img src="https://img.shields.io/badge/download-latest-brightgreen" alt="Download"></a>
+  <a href="https://clipd.hengkysandy.com"><img src="https://img.shields.io/badge/website-clipd.hengkysandy.com-6741e8" alt="Website"></a>
   <img src="https://img.shields.io/badge/platform-macOS-blue" alt="Platform">
   <img src="https://img.shields.io/badge/requires-macOS%2015%2B-red" alt="Requirements">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License"></a>
