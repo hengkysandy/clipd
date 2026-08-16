@@ -24,6 +24,18 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.retention, .forever)
         XCTAssertTrue(settings.autoClearEnabled)
         XCTAssertEqual(settings.ignoredBundleIDs, AppSettings.seedIgnored)
+        // On, so a first launch explains the one permission the app cannot
+        // work without. Defaulting this off would restore the old flow where
+        // the first prompt arrives at the first paste.
+        XCTAssertTrue(settings.showAccessibilityOnboarding)
+    }
+
+    /// Turning the first-run window off has to stick across launches. If it did
+    /// not, somebody running Clipd deliberately without pasting would be asked
+    /// again every single time they logged in.
+    func testTurningOffTheFirstRunWindowSurvivesARelaunch() {
+        AppSettings(defaults: defaults).showAccessibilityOnboarding = false
+        XCTAssertFalse(AppSettings(defaults: defaults).showAccessibilityOnboarding)
     }
 
     func testTheSeedListCoversTheManagersWeMeasured() {
