@@ -141,6 +141,50 @@ public enum Schema {
             SELECT rowid, text_content, preview, title FROM items WHERE deleted_at IS NULL
             """,
         ]),
+
+        Migration(version: 4, statements: [
+            // Link previews, and the one table in this file that is NOT synced.
+            //
+            // No updated_at, no deleted_at, no device_id, on purpose. This is
+            // derived data: every row can be rebuilt by asking the page again,
+            // so shipping it between Macs would upload third party pictures
+            // into the user's own bucket to save a request that costs nothing.
+            // The sync readiness test names its tables explicitly, so leaving
+            // this one out of that list is the statement that it stays local.
+            //
+            // Keyed by URL rather than by item id, so ten copies of the same
+            // link share one fetch and one picture.
+            //
+            // `status` records refusals and failures as well as successes. A
+            // row saying "refused, looks single use" is why the card shows no
+            // picture, and without it the app would ask the same page again on
+            // every panel open and get the same no every time.
+            """
+            CREATE TABLE link_previews (
+              url        TEXT PRIMARY KEY NOT NULL,
+              title      TEXT,
+              image      BLOB,
+              status     TEXT NOT NULL,
+              fetched_at INTEGER NOT NULL
+            )
+            """,
+        ]),
+
+        Migration(version: 5, statements: [
+            // Throw the preview cache away, because the reader changed.
+            //
+            // A cached "nothing to show" is an answer about a page AND about
+            // the code that asked. When the asking gets better, every old no is
+            // stale, and nothing would ever ask again: the row exists, so the
+            // panel is satisfied. Measured on a real history: two YouTube links
+            // kept their compass after the fetcher learned to read YouTube,
+            // because they had already been asked and had already said no.
+            //
+            // Safe to repeat for the same reason the table is not synced. Every
+            // row is rebuildable from its URL, so the worst case is one fetch
+            // per link you actually look at.
+            "DELETE FROM link_previews",
+        ]),
     ]
 
     public static var latestVersion: Int {

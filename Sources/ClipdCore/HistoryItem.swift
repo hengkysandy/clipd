@@ -123,11 +123,26 @@ public struct HistoryItem: Identifiable, Equatable, Sendable {
     /// One line, bounded length. A card cannot show a 3 MB paste and trying to
     /// render one makes the panel stutter.
     static func makePreview(_ text: String) -> String {
-        let flat = text
-            .replacingOccurrences(of: "\r\n", with: " ")
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\t", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return String(flat.prefix(200))
+        flattenedBody(text, limit: 200)
     }
+}
+
+/// The text of an item, flattened to one paragraph and bounded.
+///
+/// One flattening rule with two callers and two limits, rather than two copies
+/// that drift. `HistoryItem.preview` uses 200 because it is stored on every row
+/// and searched; a card asks for more because it has more room, and asking the
+/// stored column instead was what left a third of every long card blank.
+///
+/// The input is cut before the replacing starts. Flattening a 3 MB paste per
+/// visible card on every scroll would stutter the panel, and no card can show
+/// more than a few hundred characters anyway. Twice the limit is enough slack
+/// for the trimming that follows.
+public func flattenedBody(_ text: String, limit: Int) -> String {
+    let flat = String(text.prefix(limit * 2))
+        .replacingOccurrences(of: "\r\n", with: " ")
+        .replacingOccurrences(of: "\n", with: " ")
+        .replacingOccurrences(of: "\t", with: " ")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    return String(flat.prefix(limit))
 }

@@ -32,6 +32,73 @@ final class SQLiteStoreTests: XCTestCase {
                     sourceName: "Example", createdAt: Date())
     }
 
+    // MARK: - Link previews
+
+    func testLinkPreviewRoundTripsThroughTheRealDatabase() throws {
+        let picture = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10])
+        try store.saveLinkPreview(url: "https://example.com/a", title: "A page",
+                                  image: picture, status: "ok")
+        let row = try XCTUnwrap(store.linkPreview(for: "https://example.com/a"))
+        XCTAssertEqual(row.title, "A page")
+        XCTAssertEqual(row.image, picture)
+        XCTAssertEqual(row.status, "ok")
+    }
+
+    func testARefusalIsStoredSoTheSamePageIsNotAskedAgain() throws {
+        // Without a row, the panel would fetch this URL again on every open and
+        // be refused every time, which is a retry loop against someone else's
+        // server. The row is the memory that stops it.
+        try store.saveLinkPreview(url: "https://example.com/reset?token=x", title: nil,
+                                  image: nil, status: "refused:looksSingleUse")
+        let row = try XCTUnwrap(store.linkPreview(for: "https://example.com/reset?token=x"))
+        XCTAssertNil(row.title)
+        XCTAssertNil(row.image)
+        XCTAssertEqual(row.status, "refused:looksSingleUse")
+    }
+
+    func testAnUnknownURLHasNoRow() throws {
+        XCTAssertNil(try store.linkPreview(for: "https://example.com/never-seen"))
+    }
+
+    func testASecondFetchReplacesTheFirstRatherThanFailing() throws {
+        try store.saveLinkPreview(url: "https://example.com/a", title: "Old",
+                                  image: nil, status: "ok:titleOnly")
+        try store.saveLinkPreview(url: "https://example.com/a", title: "New",
+                                  image: Data([1, 2, 3]), status: "ok")
+        let row = try XCTUnwrap(store.linkPreview(for: "https://example.com/a"))
+        XCTAssertEqual(row.title, "New")
+        XCTAssertEqual(row.image, Data([1, 2, 3]))
+    }
+
+    func testErasingHistoryAlsoErasesTheCachedPictures() throws {
+        try store.insert(text("something"))
+        try store.saveLinkPreview(url: "https://example.com/a", title: "A page",
+                                  image: Data([1, 2, 3]), status: "ok")
+        try store.eraseAll()
+        // A cached picture names a link the user copied just as clearly as the
+        // item does. "Erase History" that leaves it behind is a lie.
+        XCTAssertNil(try store.linkPreview(for: "https://example.com/a"))
+    }
+
+    func testTurningPreviewsOffThrowsThePicturesAway() throws {
+        try store.saveLinkPreview(url: "https://example.com/a", title: "A page",
+                                  image: Data([1, 2, 3]), status: "ok")
+        try store.eraseLinkPreviews()
+        XCTAssertNil(try store.linkPreview(for: "https://example.com/a"))
+    }
+
+    func testCachedPreviewsAreNotOfferedToSync() throws {
+        try store.insert(text("an item"))
+        try store.saveLinkPreview(url: "https://example.com/a", title: "A page",
+                                  image: Data([1, 2, 3]), status: "ok")
+        // The schema test asserts the table has no sync columns. This asserts
+        // the consequence: whatever sync uploads, a cached picture of someone
+        // else's web page is not part of it.
+        let records = try store.allRecords()
+        XCTAssertEqual(records.count, 1)
+        XCTAssertFalse(records.contains { $0.id.uuidString.contains("example.com") })
+    }
+
     func testTextRoundTrips() throws {
         let item = text("arn:aws:ecs:ap-southeast-3")
         try store.insert(item)

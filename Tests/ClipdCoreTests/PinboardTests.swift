@@ -56,6 +56,47 @@ func colourAssignment() {
     #expect(BoardColor(rawValue: nextColor(after: all)) != nil)
 }
 
+@Test("No two boards share a colour until every colour is taken")
+func noDuplicatesUntilTheyRunOut() {
+    var used: [String] = []
+    for _ in BoardColor.allCases {
+        let next = nextColor(after: used)
+        #expect(!used.contains(next), "\(next) was handed out twice")
+        used.append(next)
+    }
+    #expect(Set(used).count == BoardColor.allCases.count)
+}
+
+@Test("Past the end of the palette it spreads evenly rather than counting boards")
+func spreadsEvenlyOnceFull() {
+    var used = BoardColor.allCases.map(\.rawValue)
+    // The eighth board doubles up on the first colour, and the ninth on the
+    // second, so the repeats are as far apart as the palette allows.
+    used.append(nextColor(after: used))
+    #expect(used.last == BoardColor.allCases[0].rawValue)
+    used.append(nextColor(after: used))
+    #expect(used.last == BoardColor.allCases[1].rawValue)
+}
+
+@Test("A deleted board frees its colour, and nothing else moves")
+func deletingABoardFreesItsColour() {
+    // The old rule wrapped on how many boards existed, so deleting one changed
+    // the answer for reasons unrelated to what was on screen. This asks what
+    // the remaining boards are actually wearing.
+    let all = BoardColor.allCases.map(\.rawValue)
+    let afterDeletingTheThird = all.enumerated().filter { $0.offset != 2 }.map(\.element)
+    #expect(nextColor(after: afterDeletingTheThird) == BoardColor.allCases[2].rawValue)
+}
+
+@Test("A colour that left the palette is still stored and still counted")
+func retiredColoursAreNotReassigned() {
+    // A board created before red was retired. It keeps its name in the
+    // database, and asking for the next colour must not crash or count it.
+    let next = nextColor(after: ["red", "blue"])
+    #expect(next == BoardColor.purple.rawValue)
+    #expect(BoardColor(rawValue: "red") == nil, "red must not come back into rotation")
+}
+
 @Test("Every board colour has a name that survives a round trip")
 func coloursAreCodable() {
     for colour in BoardColor.allCases {

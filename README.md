@@ -69,20 +69,20 @@ Other commands: `./app test` runs both test suites, `./app dmg` builds a release
 - [x] Swift, TypeScript, JavaScript, Python, Go, Rust, Ruby, Bash, SQL, JSON, YAML and Markdown
 - [x] Duplicate copies fold into the existing item instead of piling up
 - [x] Retention setting: Day, Week, Month, Year or Forever
-- [x] Pause capture for a while, or until you turn it back on
+- [x] Pause capture for 5, 15 or 30 minutes, an hour, or until you turn it back on
 - [ ] Rich text and file paths kept as their own kinds
 
 ### The panel and pasting
 
-- [x] Cmd+Shift+V opens the panel over whatever you are using, including fullscreen apps
+- [x] Cmd+Shift+V opens the panel over whatever you are using, including fullscreen apps, and the shortcut can be changed in Settings
 - [x] Type to search, Enter pastes into the app you came from
 - [x] Search matches the item name as well as its content, so you can find a thing by a word that is not in it
 - [x] Cmd+1 to Cmd+9 pastes the card wearing that number
 - [x] Right click any card to paste, copy, name it, pin it or delete it
-- [x] Copy and paste sound effects, or none
+- [x] Copy and paste sound effects, or none, chosen separately in Settings
+- [x] Link cards show the page's picture and title, if you turn that on
 - [ ] Paste stack, for collecting several items and pasting them in order
 - [ ] Plain text paste mode
-- [ ] Link previews
 - [ ] Verified on a second display. It has never been tested on one
 
 ### Organising
@@ -100,6 +100,11 @@ Other commands: `./app test` runs both test suites, `./app dmg` builds a release
 - [x] An item is deleted retroactively if the clipboard is wiped soon after it was copied, which is what a password manager does
 - [x] "Never record copies from this app" on any captured item
 - [x] Erase the whole history from Settings
+- [x] Link previews are **off by default**, and stay off until you switch them on
+
+Clipd talks to no server at all unless you ask it to. There are exactly two things that can make it use the network: sync, which goes to an R2 bucket you own and pays no one else, and link previews, which are off out of the box.
+
+With link previews on, a link card asks the page for its title and picture, which tells that site you copied the link. Even then it will not ask about a one time link (anything that looks like a password reset, a login link, an invite or a signed URL), anything on your own network, or a URL carrying credentials. Turning the setting off again deletes the pictures it already fetched.
 
 Apple's Passwords.app sets **no marker at all**. This was measured, not assumed: a real password copy arrives as a 20 byte plain text item with nothing to distinguish it from any other short copy. That is why there are four independent layers rather than one, and why the deny-list ships pre-filled.
 
@@ -130,7 +135,7 @@ Clipd uses Swift 6 with strict concurrency and several newer AppKit and CryptoKi
 
 ## Gallery
 
-**The panel.** Cmd+Shift+V from anywhere. Type to search, Enter pastes into the app you came from, and Cmd plus the number in the corner of a card pastes that one.
+**The panel.** Cmd+Shift+V from anywhere, or Open Clipd from the menu bar. Type to search, Enter pastes into the app you came from, and Cmd plus the number in the corner of a card pastes that one.
 
 ![The Clipd panel](docs/images/panel.png)
 

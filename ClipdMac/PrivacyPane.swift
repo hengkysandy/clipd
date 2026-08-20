@@ -16,7 +16,27 @@ final class PrivacyPane: NSViewController, NSTableViewDataSource, NSTableViewDel
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 400))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 470))
+
+        // The only setting in the app that lets it talk to a machine the user
+        // does not own, so it sits at the top of the Privacy pane and says so
+        // in plain words.
+        let previews = NSButton(checkboxWithTitle: "Show pictures and titles on link cards",
+                                target: self, action: #selector(toggleLinkPreviews(_:)))
+        previews.frame = NSRect(x: 24, y: 430, width: 420, height: 20)
+        previews.state = settings.linkPreviewsEnabled ? .on : .off
+        root.addSubview(previews)
+
+        let previewsExplain = NSTextField(wrappingLabelWithString:
+            "Off by default. When on, Clipd asks each copied web address for its "
+            + "picture and title. That tells the site you copied the link. It "
+            + "never asks about a one time link (a password reset, a login link, "
+            + "a signed download) or anything on your own network. Turning this "
+            + "off again deletes the pictures it already has.")
+        previewsExplain.frame = NSRect(x: 42, y: 372, width: 400, height: 56)
+        previewsExplain.font = .systemFont(ofSize: 11)
+        previewsExplain.textColor = .secondaryLabelColor
+        root.addSubview(previewsExplain)
 
         let autoClear = NSButton(checkboxWithTitle: "Forget an item if the clipboard is cleared soon after",
                                  target: self, action: #selector(toggleAutoClear(_:)))
@@ -73,7 +93,7 @@ final class PrivacyPane: NSViewController, NSTableViewDataSource, NSTableViewDel
         // Without this the tab controller stretches the pane to fill an
         // oversized window and the content sinks to the bottom, because these
         // subviews are laid out from the bottom edge.
-        preferredContentSize = NSSize(width: 460, height: 400)
+        preferredContentSize = NSSize(width: 460, height: 470)
         for sub in root.subviews { sub.autoresizingMask = [.minYMargin] }
         view = root
     }
@@ -81,6 +101,10 @@ final class PrivacyPane: NSViewController, NSTableViewDataSource, NSTableViewDel
     private func reload() {
         ids = settings.ignoredBundleIDs.sorted()
         table?.reloadData()
+    }
+
+    @objc private func toggleLinkPreviews(_ sender: NSButton) {
+        settings.linkPreviewsEnabled = sender.state == .on
     }
 
     @objc private func toggleAutoClear(_ sender: NSButton) {

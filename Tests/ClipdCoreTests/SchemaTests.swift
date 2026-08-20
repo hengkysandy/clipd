@@ -130,3 +130,37 @@ func migrationTwoIsUnchanged() throws {
     #expect(two.statements.contains { $0.contains("fts5(text_content, preview)") })
     #expect(!two.statements.contains { $0.contains("title") })
 }
+
+// MARK: - Migration 4, link previews
+
+@Test("Migration 4 creates the link preview cache")
+func migrationFourCreatesTheCache() throws {
+    let four = try #require(Schema.migrations.first { $0.version == 4 },
+                            "migration 4 is missing, so no database grows a preview cache")
+    let create = try #require(four.statements.first { $0.contains("CREATE TABLE link_previews") })
+    for column in ["url", "title", "image", "status", "fetched_at"] {
+        #expect(create.contains(column), "link_previews is missing \(column)")
+    }
+}
+
+@Test("The preview cache is deliberately not sync ready")
+func previewCacheStaysLocal() throws {
+    let four = try #require(Schema.migrations.first { $0.version == 4 })
+    let create = try #require(four.statements.first { $0.contains("CREATE TABLE link_previews") })
+    // This is an assertion about intent, not an oversight. Cached pictures of
+    // other people's web pages must never be uploaded to the user's bucket:
+    // they are rebuildable from the URL, and sending them would put third party
+    // content into a store that otherwise holds only what the user copied.
+    for column in ["updated_at", "deleted_at", "device_id"] {
+        #expect(!create.contains(column),
+                "link_previews grew \(column), which is how it would start syncing")
+    }
+}
+
+@Test("Migration 5 clears the preview cache, so a better reader gets another go")
+func migrationFiveClearsTheCache() throws {
+    let five = try #require(Schema.migrations.first { $0.version == 5 })
+    #expect(five.statements.contains { $0.contains("DELETE FROM link_previews") })
+    // It must not drop the table. The next launch has to find it there.
+    #expect(!five.statements.contains { $0.contains("DROP TABLE") })
+}

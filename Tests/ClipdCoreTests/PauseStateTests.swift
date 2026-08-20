@@ -53,3 +53,37 @@ func clockGoesBackwards() {
     let state = PauseState.paused(.fifteenMinutes, from: t0)
     #expect(state.isPaused(now: t0.addingTimeInterval(-3600)) == true)
 }
+
+@Test("Every timed length pauses for exactly that long")
+func everyLengthIsWhatItSays() {
+    let expected: [(PauseDuration, TimeInterval)] = [
+        (.fiveMinutes, 5 * 60), (.fifteenMinutes, 15 * 60),
+        (.thirtyMinutes, 30 * 60), (.oneHour, 60 * 60),
+    ]
+    for (duration, seconds) in expected {
+        let state = PauseState.paused(duration, from: t0)
+        #expect(state.isPaused(now: t0.addingTimeInterval(seconds - 1)) == true,
+                "\(duration.rawValue) ended early")
+        #expect(state.isPaused(now: t0.addingTimeInterval(seconds)) == false,
+                "\(duration.rawValue) ran long")
+    }
+    // Every case is covered above or is the indefinite one. A length added
+    // without a line here would otherwise ship untested.
+    #expect(expected.count + 1 == PauseDuration.allCases.count)
+}
+
+@Test("The menu lists the lengths shortest first")
+func menuOrderIsAscending() {
+    // allCases IS the menu order, so a case inserted in the wrong place puts
+    // "For 1 hour" above "For 5 minutes" with nothing to catch it.
+    let timed = PauseDuration.allCases.compactMap { $0.seconds }
+    #expect(timed == timed.sorted())
+    #expect(PauseDuration.allCases.last == .untilResumed)
+}
+
+@Test("A five minute pause reads as five minutes in the menu")
+func shortPauseLabel() {
+    let state = PauseState.paused(.fiveMinutes, from: t0)
+    #expect(state.remainingLabel(now: t0) == "Paused, 5 min left")
+    #expect(state.remainingLabel(now: t0.addingTimeInterval(4 * 60)) == "Paused, 1 min left")
+}

@@ -379,6 +379,9 @@ final class SQLiteStore {
         }
         try db.execute("DELETE FROM items_fts")
         try db.execute("DELETE FROM items")
+        // Cached page pictures are part of "erase my history": they say which
+        // links were copied just as loudly as the items do.
+        try db.execute("DELETE FROM link_previews")
     }
 
     // MARK: - Sync
@@ -795,6 +798,50 @@ final class SQLiteStore {
             }
         }
         return out
+    }
+
+    // MARK: - Link previews
+
+    /// A cached answer about one URL. `image` is nil when the page had no
+    /// picture, or when we refused to ask.
+    struct CachedPreview {
+        let title: String?
+        let image: Data?
+        let status: String
+    }
+
+    func linkPreview(for url: String) throws -> CachedPreview? {
+        guard let row = try db.query(
+            "SELECT title, image, status FROM link_previews WHERE url = ?",
+            [.text(url)]).first else { return nil }
+        var title: String?
+        var image: Data?
+        if case .text(let value)? = row["title"] { title = value }
+        if case .blob(let value)? = row["image"] { image = value }
+        guard case .text(let status)? = row["status"] else { return nil }
+        return CachedPreview(title: title, image: image, status: status)
+    }
+
+    /// Records what happened, success or not.
+    ///
+    /// A refusal and a failure are written just like a hit. Without a row the
+    /// panel would ask the same page again every time it opened, which turns
+    /// one refusal into an endless retry loop against a stranger's server.
+    func saveLinkPreview(url: String, title: String?, image: Data?, status: String) throws {
+        try db.run("""
+            INSERT OR REPLACE INTO link_previews (url, title, image, status, fetched_at)
+            VALUES (?,?,?,?,?)
+            """, [.text(url),
+                  title.map { SQLValue.text($0) } ?? .null,
+                  image.map { SQLValue.blob($0) } ?? .null,
+                  .text(status),
+                  .int(Int64(Date().timeIntervalSince1970 * 1000))])
+    }
+
+    /// Throws the cache away. Used when the user turns previews off, so the
+    /// pictures do not sit in the database after they said stop.
+    func eraseLinkPreviews() throws {
+        try db.execute("DELETE FROM link_previews")
     }
 
     // MARK: - Board sync

@@ -1,4 +1,5 @@
 import AppKit
+import ClipdCore
 
 /// The Settings window.
 ///
@@ -11,6 +12,8 @@ final class SettingsWindowController: NSWindowController {
 
     init(settings: AppSettings,
          onErase: @escaping () -> Void,
+         onRecordShortcut: @escaping (Shortcut) -> Bool,
+         onShortcutRecording: @escaping (Bool) -> Void,
          lastSync: @escaping () -> (Date?, String?),
          onSyncNow: @escaping (R2Credentials, String, @escaping (String) -> Void) -> Void) {
         self.settings = settings
@@ -18,7 +21,9 @@ final class SettingsWindowController: NSWindowController {
 
         let tabs = NSTabViewController()
         tabs.tabStyle = .toolbar
-        tabs.addChild(GeneralPane(settings: settings, onErase: onErase))
+        tabs.addChild(GeneralPane(settings: settings, onErase: onErase,
+                                  onRecordShortcut: onRecordShortcut,
+                                  onShortcutRecording: onShortcutRecording))
         tabs.addChild(PrivacyPane(settings: settings))
         tabs.addChild(SyncPane(settings: settings, lastSync: lastSync, onSyncNow: onSyncNow))
 

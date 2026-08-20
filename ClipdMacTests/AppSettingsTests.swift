@@ -30,6 +30,33 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertTrue(settings.showAccessibilityOnboarding)
     }
 
+    func testTheShortcutDefaultsToTheOneTheAppHasAlwaysUsed() {
+        let settings = AppSettings(defaults: defaults)
+        XCTAssertEqual(settings.panelShortcut, .panelDefault)
+        XCTAssertEqual(settings.panelShortcut.display, "⇧⌘V")
+    }
+
+    func testAChangedShortcutSurvivesARelaunch() {
+        let chosen = Shortcut(keyCode: 8, modifiers: [.control, .option], label: "C")
+        AppSettings(defaults: defaults).panelShortcut = chosen
+        // A second instance, which is what the next launch is.
+        XCTAssertEqual(AppSettings(defaults: defaults).panelShortcut, chosen)
+    }
+
+    func testARubbishStoredShortcutFallsBackRatherThanBreakingTheApp() {
+        // A value written by a future version, or a half finished write. The
+        // app must still have a way to open its own panel, so it falls back
+        // instead of ending up with no shortcut at all.
+        defaults.set("this is not a shortcut", forKey: "clipd.panelShortcut")
+        XCTAssertEqual(AppSettings(defaults: defaults).panelShortcut, .panelDefault)
+    }
+
+    func testTheDefaultShortcutIsUsable() {
+        // The registration path refuses an unusable shortcut, so a default that
+        // failed this test would leave a fresh install with no working hotkey.
+        XCTAssertTrue(Shortcut.panelDefault.isUsable)
+    }
+
     /// Turning the first-run window off has to stick across launches. If it did
     /// not, somebody running Clipd deliberately without pasting would be asked
     /// again every single time they logged in.

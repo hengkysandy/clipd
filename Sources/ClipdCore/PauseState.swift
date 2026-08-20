@@ -1,13 +1,23 @@
 import Foundation
 
+/// How long capture stays off.
+///
+/// Declaration order IS menu order, shortest first, because the menu is built
+/// straight from `allCases`. The raw values are names rather than numbers, so
+/// adding a length never renumbers an existing one: a pause already stored as
+/// "fifteenMinutes" keeps meaning fifteen minutes.
 public enum PauseDuration: String, CaseIterable, Equatable, Sendable {
+    case fiveMinutes
     case fifteenMinutes
+    case thirtyMinutes
     case oneHour
     case untilResumed
 
     public var label: String {
         switch self {
+        case .fiveMinutes: return "For 5 minutes"
         case .fifteenMinutes: return "For 15 minutes"
+        case .thirtyMinutes: return "For 30 minutes"
         case .oneHour: return "For 1 hour"
         case .untilResumed: return "Until I resume"
         }
@@ -15,7 +25,9 @@ public enum PauseDuration: String, CaseIterable, Equatable, Sendable {
 
     var seconds: TimeInterval? {
         switch self {
+        case .fiveMinutes: return 5 * 60
         case .fifteenMinutes: return 15 * 60
+        case .thirtyMinutes: return 30 * 60
         case .oneHour: return 60 * 60
         case .untilResumed: return nil
         }

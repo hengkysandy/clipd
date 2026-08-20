@@ -280,3 +280,29 @@ func titlesDoNotAffectDedup() {
                             createdAt: date)
     #expect(named.contentHash == plain.contentHash)
 }
+
+@Test("The card body may ask for more text than the stored preview holds")
+func bodyLimitIsTheCallersChoice() {
+    let long = String(repeating: "abcde ", count: 200)   // 1200 characters
+    #expect(flattenedBody(long, limit: 200).count == 200)
+    #expect(flattenedBody(long, limit: 700).count == 700)
+    // The stored preview keeps its own limit, because it is on every row and
+    // is what search reads.
+    let item = HistoryItem(text: long, sourceBundleID: nil, sourceName: nil,
+                           createdAt: Date())
+    #expect(item.preview.count == 200)
+}
+
+@Test("Flattening still collapses every kind of line break")
+func flatteningIsUnchanged() {
+    #expect(flattenedBody("a\r\nb\nc\td", limit: 100) == "a b c d")
+    #expect(flattenedBody("  padded  ", limit: 100) == "padded")
+}
+
+@Test("A huge paste is cut before it is flattened, not after")
+func hugePasteStaysCheap() {
+    // 3 MB. If the replacing ran on the whole string this test would take
+    // long enough to notice, which is the point: it runs per visible card.
+    let huge = String(repeating: "x", count: 3_000_000)
+    #expect(flattenedBody(huge, limit: 700).count == 700)
+}

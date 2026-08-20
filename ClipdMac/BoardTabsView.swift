@@ -20,11 +20,16 @@ final class BoardTabsView: NSView {
         case .blue: return .systemBlue
         case .purple: return .systemPurple
         case .pink: return .systemPink
-        case .red: return .systemRed
+        case .teal: return .systemTeal
         case .orange: return .systemOrange
         case .yellow: return .systemYellow
         case .green: return .systemGreen
-        case nil: return .systemGray
+        case nil:
+            // Retired palette entries keep their old colour. A board made
+            // before red left the palette must not silently turn grey: the user
+            // named it, filed things on it, and never asked for it to change.
+            if name == "red" { return .systemRed }
+            return .systemGray
         }
     }
 

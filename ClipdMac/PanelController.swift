@@ -147,6 +147,22 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     /// Sets or clears one item's name. Nil means remove it.
     var onRenameItem: ((UUID, String?) -> Void)?
 
+    /// What a link card should show beyond its address. Nil until the app
+    /// wires it, and nil is safe: every link then draws the compass, which is
+    /// exactly what an app with previews switched off looks like.
+    var previewProvider: ((String) -> LinkPreviewEntry?)?
+
+    /// Redraws the strip in place, keeping the selection.
+    ///
+    /// Called when a link preview lands. `reload()` cannot be used here: it
+    /// resets the selection to the first card, so a picture arriving while you
+    /// were three cards along would move your selection under you.
+    func refreshCards() {
+        guard panel.isVisible else { return }
+        collection.reloadData()
+        applySelection(scroll: false)
+    }
+
     /// Full text search across the whole stored history, not just what the panel
     /// holds in memory. Nil until the app wires it, and nil is safe: the panel
     /// then behaves exactly as it did before, searching the loaded items.
@@ -443,7 +459,10 @@ final class PanelController: NSObject, NSTextFieldDelegate,
                       width: screen.width, height: Self.panelHeight)
     }
 
-    private func show() {
+    /// Internal rather than private: the menu bar's Open Clipd item calls it.
+    /// It must open, not toggle, because the menu closing changes what is
+    /// frontmost and the user asked for one specific thing.
+    func show() {
         previousApp = NSWorkspace.shared.frontmostApplication
         field.stringValue = ""
         (boards, membership) = boardProvider()
@@ -982,7 +1001,8 @@ final class PanelController: NSObject, NSTextFieldDelegate,
             // on dictionary iteration order.
             let colors = boards.filter { (membership[$0.id] ?? []).contains(item.id) }
                                .map(\.colorName)
-            card.configure(with: item, index: indexPath.item, boardColors: colors)
+            card.configure(with: item, index: indexPath.item, boardColors: colors,
+                           preview: item.kind == .link ? previewProvider?(item.text) : nil)
             card.onClick = { [weak self] index, clicks in
                 self?.handleCardClick(index: index, clickCount: clicks)
             }

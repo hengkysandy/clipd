@@ -17,3 +17,7 @@ art/AppIcon.iconset/
 
 # Cloudflare Pages deploy state. The site source is committed, this is not.
 .wrangler/
+
+# Throwaway measurement binaries and their sources. What they measured is
+# recorded in the tests that enforce it, which is the part worth keeping.
+probes/

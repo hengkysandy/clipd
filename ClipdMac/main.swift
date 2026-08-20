@@ -50,6 +50,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var lastSyncSummary: String?
     private var database: Database?
     private var store: SQLiteStore?
+    /// Built with the store, because it reads and writes the preview cache.
+    private var previews: LinkPreviewCache?
     private var lastPausedFlag = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -80,6 +82,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.onChange = { [weak self] in
             Diag.capture.info("settings changed, capture rules reloaded")
             self?.rebuildMenu()
+            // Switching previews off throws away what was already fetched. The
+            // setting says the app should not be holding pictures of other
+            // people's pages, and that has to be true of the ones it already
+            // has, not only of the next one.
+            if self?.settings.linkPreviewsEnabled == false {
+                self?.previews?.forgetEverything()
+            }
         }
         watcher.start()
 
@@ -146,13 +155,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if ok { Sounds.pasted() }
             Diag.paste.info("pasted \(item.kind.rawValue, privacy: .public), \(item.imageData?.count ?? item.text.count, privacy: .public) bytes or chars, into \(target?.bundleIdentifier ?? "nil", privacy: .public), success \(ok, privacy: .public)")
         }
-        hotKey = HotKey { [weak self] in
-            self?.panelController.toggle()
-        }
-        if hotKey == nil {
+        if !registerPanelHotKey(settings.panelShortcut) {
             // Measured: two apps CAN both register the same hotkey and both
             // fire, so this is not the only way coexistence goes wrong.
-            Diag.panel.error("Cmd+Shift+V is already taken. If the real Paste app is running, quit it.")
+            Diag.panel.error("the panel shortcut is already taken by another app")
         }
         startAccessibilityMonitor()
     }
@@ -253,8 +259,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let trusted = accessibility.isTrusted
         setStatusIcon(trusted: trusted, paused: pause.isPaused(now: Date()))
         let header = NSMenuItem(
+            // No app name. The menu hangs off the Clipd icon and the last item
+            // says Quit Clipd, so a third mention only made the menu wider:
+            // measured, the app name alone was 23 of 230 points, and below
+            // about eighteen characters the header stops setting the width at
+            // all. The version stays because "which version are you on" is the
+            // first question anyone asks.
             title: trusted
-                ? "Clipd \(ClipdCore.version), \(history.items.count) items"
+                ? "v\(ClipdCore.version) \u{00B7} \(history.items.count) items"
                 : "PASTE DISABLED, Accessibility not granted",
             action: nil, keyEquivalent: "")
         header.isEnabled = false
@@ -270,6 +282,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(fix)
         }
         menu.addItem(.separator())
+
+        // Opening the panel from the menu, as well as from the shortcut.
+        //
+        // The shortcut is discoverable only if you already know it, and it is
+        // now changeable, so the menu is the one place that always says what it
+        // currently is. The key equivalent is deliberately NOT set on this item:
+        // the Carbon hotkey already owns that combination globally, and an
+        // NSMenuItem claiming it too would be a second owner of one keystroke.
+        let open = NSMenuItem(title: "Open Clipd  \(settings.panelShortcut.display)",
+                              action: #selector(openPanel), keyEquivalent: "")
+        open.target = self
+        menu.addItem(open)
+
         // Deliberately no clipboard preview here.
         //
         // It put the last five things you copied on screen every time you
@@ -301,11 +326,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(pauseItem)
         }
 
-        menu.addItem(soundMenu(title: "Copy sound", slot: .capture))
-        menu.addItem(soundMenu(title: "Paste sound", slot: .paste))
-
-        let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings),
-                                      keyEquivalent: ",")
+        // No key equivalent on Settings, and that is not only about the icon.
+        //
+        // Cmd+comma in a status menu fires only while the menu is open, because
+        // this app is an accessory with no main menu, so it was never a real
+        // shortcut. macOS 26 also draws a gear beside any item it recognises as
+        // the standard Settings command, and one item with an icon indents
+        // every other item in the menu to line up with it.
+        let settingsItem = NSMenuItem(title: "Settings...", action: #selector(presentSettings),
+                                      keyEquivalent: "")
         settingsItem.target = self
         menu.addItem(settingsItem)
 
@@ -329,42 +358,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pause = .running
         lastPausedFlag = false
         Diag.capture.info("resumed")
-        rebuildMenu()
-    }
-
-    /// A submenu listing every system sound plus Off, with the current choice
-    /// ticked. Choosing one plays it immediately, because picking a sound from
-    /// a list of names you cannot hear is guesswork.
-    private func soundMenu(title: String, slot: Sounds.Slot) -> NSMenuItem {
-        let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        let submenu = NSMenu()
-        let current = Sounds.name(for: slot)
-
-        let off = NSMenuItem(title: "Off", action: #selector(chooseSound(_:)), keyEquivalent: "")
-        off.target = self
-        off.representedObject = [slot.rawValue, ""]
-        off.state = current == nil ? .on : .off
-        submenu.addItem(off)
-        submenu.addItem(.separator())
-
-        for name in Sounds.available {
-            let entry = NSMenuItem(title: name, action: #selector(chooseSound(_:)), keyEquivalent: "")
-            entry.target = self
-            entry.representedObject = [slot.rawValue, name]
-            entry.state = current == name ? .on : .off
-            submenu.addItem(entry)
-        }
-        parent.submenu = submenu
-        return parent
-    }
-
-    @objc private func chooseSound(_ sender: NSMenuItem) {
-        guard let pair = sender.representedObject as? [String], pair.count == 2,
-              let slot = Sounds.Slot(rawValue: pair[0]) else { return }
-        let name = pair[1].isEmpty ? nil : pair[1]
-        Sounds.setName(name, for: slot)
-        if let name { Sounds.play(named: name) }
-        Diag.capture.info("sound for \(slot.rawValue, privacy: .public) set to \(name ?? "off", privacy: .public)")
         rebuildMenu()
     }
 
@@ -439,6 +432,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             self.database = db
             self.store = store
+
+            // Link previews. Wired here rather than at panel build time because
+            // it needs the store, which does not exist until the database has
+            // opened and migrated.
+            let previews = LinkPreviewCache(store: store, settings: settings)
+            previews.onUpdate = { [weak self] in self?.panelController.refreshCards() }
+            self.previews = previews
+            panelController.previewProvider = { [weak previews] url in
+                previews?.entry(for: url)
+            }
             runDedup()
             runRetentionSweep()
             retentionTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
@@ -491,11 +494,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func openSettings() {
+    /// Opens the panel from the menu.
+    ///
+    /// `show()` rather than `toggle()`: the menu closes as this fires, and a
+    /// toggle would then be deciding against a state the user cannot see.
+    /// Clicking a menu item called Open Clipd must open Clipd.
+    @objc private func openPanel() {
+        panelController.show()
+    }
+
+    /// Registers the panel shortcut, replacing whatever was registered before.
+    ///
+    /// Returns false when macOS refuses, which means another app holds it. The
+    /// old shortcut is put back in that case, so a failed change never leaves
+    /// the app with no way to open its panel at all.
+    @discardableResult
+    private func registerPanelHotKey(_ shortcut: Shortcut) -> Bool {
+        let previous = hotKey
+        previous?.unregister()
+        hotKey = HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.carbonModifiers) {
+            [weak self] in self?.panelController.toggle()
+        }
+        guard hotKey != nil else {
+            hotKey = HotKey(keyCode: settings.panelShortcut.keyCode,
+                            modifiers: settings.panelShortcut.carbonModifiers) {
+                [weak self] in self?.panelController.toggle()
+            }
+            return false
+        }
+        Diag.panel.info("panel shortcut registered")
+        return true
+    }
+
+    /// Frees the shortcut while the user is recording a new one.
+    ///
+    /// Without this, pressing the current shortcut inside the recorder opens
+    /// the panel over the settings window instead of being recorded, so the one
+    /// combination you can never set is the one you already have.
+    private func setHotKeyPaused(_ paused: Bool) {
+        if paused {
+            hotKey?.unregister()
+            hotKey = nil
+        } else if hotKey == nil {
+            registerPanelHotKey(settings.panelShortcut)
+        }
+    }
+
+    /// Named `presentSettings`, not `openSettings`, and that is load bearing.
+    ///
+    /// Measured with a throwaway status menu: macOS 26 draws a gear beside any
+    /// item whose action selector is called `openSettings`. Not the title, the
+    /// selector: the same item titled "Settings..." with any other selector
+    /// gets nothing. One item with an icon indents every other item in the menu
+    /// to line up with it, which cost 20 points of width and made a five item
+    /// menu look like a settings panel.
+    @objc private func presentSettings() {
         if settingsWindow == nil {
             settingsWindow = SettingsWindowController(
                 settings: settings,
                 onErase: { [weak self] in self?.eraseAllHistory() },
+                onRecordShortcut: { [weak self] shortcut in
+                    guard let self, registerPanelHotKey(shortcut) else { return false }
+                    settings.panelShortcut = shortcut
+                    // The menu prints the shortcut, so it is now out of date.
+                    rebuildMenu()
+                    Diag.panel.info("panel shortcut changed")
+                    return true
+                },
+                onShortcutRecording: { [weak self] recording in
+                    self?.setHotKeyPaused(recording)
+                },
                 lastSync: { [weak self] in (self?.lastSyncAt, self?.lastSyncSummary) },
                 onSyncNow: { [weak self] credentials, passphrase, report in
                     self?.runSync(credentials: credentials, passphrase: passphrase, report: report)

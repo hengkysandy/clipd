@@ -14,6 +14,8 @@ final class AppSettings {
         static let ignoredSeeded = "clipd.ignoredSeeded"
         static let autoSync = "clipd.autoSyncEnabled"
         static let showOnboarding = "clipd.showAccessibilityOnboarding"
+        static let linkPreviews = "clipd.linkPreviewsEnabled"
+        static let panelShortcut = "clipd.panelShortcut"
     }
 
     /// Measured: Apple's Passwords.app sets no concealed marker at all, so for
@@ -40,6 +42,41 @@ final class AppSettings {
         if !defaults.bool(forKey: Key.ignoredSeeded) {
             defaults.set(Array(Self.seedIgnored), forKey: Key.ignored)
             defaults.set(true, forKey: Key.ignoredSeeded)
+        }
+    }
+
+    /// The global shortcut that opens the panel.
+    ///
+    /// Falls back to Cmd+Shift+V when the stored value is missing or does not
+    /// parse. Rejected: refusing to start with a broken value, which would
+    /// leave the app with no way to open its own panel and no way to fix it.
+    var panelShortcut: Shortcut {
+        get {
+            guard let raw = defaults.string(forKey: Key.panelShortcut),
+                  let shortcut = Shortcut(encoded: raw) else { return .panelDefault }
+            return shortcut
+        }
+        set {
+            defaults.set(newValue.encoded, forKey: Key.panelShortcut)
+            // Deliberately does NOT fire onChange. The hotkey is re-registered
+            // by the code that sets this, because that is the only place that
+            // can tell the user when macOS refuses it.
+        }
+    }
+
+    /// Whether a link card may fetch the page's picture and title.
+    ///
+    /// Off by default, and this is the one default in the app that is worth
+    /// arguing about. Turning it on makes Clipd talk to servers the user does
+    /// not own, which nothing else in the app does: it is otherwise a local
+    /// database plus a bucket the user pays for. A default of on would quietly
+    /// change what the app is, on an update, for people who never asked for
+    /// thumbnails. So it starts off and the Privacy pane explains it.
+    var linkPreviewsEnabled: Bool {
+        get { defaults.bool(forKey: Key.linkPreviews) }
+        set {
+            defaults.set(newValue, forKey: Key.linkPreviews)
+            onChange?()
         }
     }
 

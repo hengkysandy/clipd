@@ -64,12 +64,41 @@ final class CardItem: NSCollectionViewItem {
     /// 258pt scroll area, the character count fell off the screen.
     static let size = NSSize(width: 250, height: 268)
 
+    /// The footer label in its two shapes. A character count is short and sits
+    /// next to the index; an address is long and claims every point up to it.
+    private static let countFrame = NSRect(x: 12, y: 10, width: 150, height: 16)
+    private static let addressFrame = NSRect(x: 12, y: 10,
+                                             width: size.width - 12 - 52, height: 16)
+
+    /// The body area, and how a link card divides it.
+    ///
+    /// A link with a picture gets `linkImageFrame` for the picture and
+    /// `linkTitleFrame` underneath for the page title. A link without one
+    /// centres the compass in whatever is left after the title, which is why
+    /// the glyph frame is computed rather than fixed.
+    private static let bodyFrame = NSRect(x: 12, y: 34, width: size.width - 24,
+                                          height: size.height - 58 - 44)
+    private static let linkTitleFrame = NSRect(x: 12, y: 34, width: size.width - 24, height: 34)
+    private static let linkImageFrame = NSRect(x: 12, y: 72, width: size.width - 24, height: 128)
+    private static let glyphSize: CGFloat = 56
+
+    /// The compass, centred in whatever the title has not taken.
+    private static func glyphFrame(withTitle: Bool) -> NSRect {
+        let top = bodyFrame.maxY
+        let bottom = withTitle ? linkTitleFrame.maxY + 4 : bodyFrame.minY
+        return NSRect(x: (size.width - glyphSize) / 2,
+                      y: bottom + (top - bottom - glyphSize) / 2,
+                      width: glyphSize, height: glyphSize)
+    }
+
     private var header: NSView!
     private var kindLabel: NSTextField!
     private var timeLabel: NSTextField!
     private var iconView: NSImageView!
     private var bodyLabel: NSTextField!
     private var previewImageView: NSImageView!
+    private var linkGlyph: NSImageView!
+    private var linkTitle: NSTextField!
     private var countLabel: NSTextField!
     private var indexLabel: NSTextField!
     private var card: NSView!
@@ -78,7 +107,19 @@ final class CardItem: NSCollectionViewItem {
     /// overwrites both and a recycled cell has to be put back exactly.
     private static let proseFont = NSFont.systemFont(ofSize: 12)
     private static let proseColor = NSColor(calibratedWhite: 0.92, alpha: 1)
-    private static let proseLines = 8
+
+    /// How many lines of prose the body can hold, worked out from the font
+    /// rather than guessed.
+    ///
+    /// It was 8, which is roughly two thirds of what fits. A long paste
+    /// therefore stopped in mid air with a third of the card left blank, which
+    /// reads as the card being broken rather than the text being longer than
+    /// the card. Deriving it means a change to the font size or the card height
+    /// cannot silently reintroduce that gap.
+    private static let proseLines: Int = {
+        let lineHeight = ceil(proseFont.ascender - proseFont.descender + proseFont.leading)
+        return max(1, Int(bodyFrame.height / lineHeight))
+    }()
 
     /// How much of the text is handed to the preview builder.
     ///
@@ -86,6 +127,14 @@ final class CardItem: NSCollectionViewItem {
     /// in full would be wasted work on every scroll. 4000 characters is far
     /// more than 12 lines of anything.
     private static let codeScanLimit = 4000
+
+    /// How much text the prose body asks for.
+    ///
+    /// Comfortably more than `proseLines` can show at this width, so the label
+    /// runs out of room before the string runs out of characters. That is the
+    /// right way round: an ellipsis means "there is more", and a card that
+    /// simply stopped would mean nothing.
+    private static let proseBodyLimit = 700
 
     private var itemKind: ItemKind = .text
     /// The colours of every board this item is filed on, in board order.
@@ -168,12 +217,38 @@ final class CardItem: NSCollectionViewItem {
         previewImageView.isHidden = true
         card.addSubview(previewImageView)
 
+        // The placeholder for a link with no picture: a compass, centred in the
+        // body. It says "this is somewhere on the web" without pretending to
+        // know anything about the page, which is exactly what we know when
+        // nothing has been fetched.
+        linkGlyph = NSImageView(frame: CardItem.glyphFrame(withTitle: false))
+        linkGlyph.image = NSImage(systemSymbolName: "safari",
+                                  accessibilityDescription: "Link")
+        linkGlyph.contentTintColor = NSColor(calibratedWhite: 1, alpha: 0.28)
+        linkGlyph.imageScaling = .scaleProportionallyUpOrDown
+        linkGlyph.isHidden = true
+        card.addSubview(linkGlyph)
+
+        // The page's own title, under its picture. Two lines, because real
+        // titles are long and one line truncates almost all of them.
+        linkTitle = NSTextField(wrappingLabelWithString: "")
+        linkTitle.frame = CardItem.linkTitleFrame
+        linkTitle.font = .systemFont(ofSize: 12, weight: .semibold)
+        linkTitle.textColor = .white
+        linkTitle.maximumNumberOfLines = 2
+        linkTitle.lineBreakMode = .byWordWrapping
+        linkTitle.cell?.wraps = true
+        linkTitle.cell?.truncatesLastVisibleLine = true
+        linkTitle.isHidden = true
+        card.addSubview(linkTitle)
+
         // Footer: character count and position.
         countLabel = NSTextField(labelWithString: "")
-        countLabel.frame = NSRect(x: 12, y: 10, width: 150, height: 16)
+        countLabel.frame = CardItem.countFrame
         countLabel.font = .systemFont(ofSize: 11)
         countLabel.textColor = NSColor(calibratedWhite: 0.6, alpha: 1)
         countLabel.alignment = .right
+        countLabel.lineBreakMode = .byTruncatingTail
         card.addSubview(countLabel)
 
         indexLabel = NSTextField(labelWithString: "")
@@ -197,7 +272,8 @@ final class CardItem: NSCollectionViewItem {
         return relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
 
-    func configure(with item: HistoryItem, index: Int, boardColors: [String] = []) {
+    func configure(with item: HistoryItem, index: Int, boardColors: [String] = [],
+                   preview: LinkPreviewEntry? = nil) {
         self.index = index
         self.boardColors = boardColors
         itemKind = item.kind
@@ -222,24 +298,40 @@ final class CardItem: NSCollectionViewItem {
             timeLabel.stringValue = CardItem.age(of: item.createdAt)
         }
         iconView.image = AppIconCache.icon(forBundleID: item.sourceBundleID)
+        // Every branch below must set all four of previewImageView, linkGlyph,
+        // bodyLabel and the footer, because cells are recycled. Leaving one
+        // alone is how a link's compass ends up floating over the next card's
+        // paragraph.
         if item.kind == .image, let data = item.imageData {
             // Decoding a 2.8 MB PNG per visible card is fine: only a handful
             // are on screen and the collection view recycles them.
             previewImageView.image = NSImage(data: data)
             previewImageView.isHidden = false
+            previewImageView.frame = CardItem.bodyFrame
+            linkGlyph.isHidden = true
+            linkTitle.isHidden = true
             bodyLabel.isHidden = true
             // Dimensions rather than a character count, matching the reference.
-            countLabel.stringValue = "\(item.pixelWidth ?? 0) x \(item.pixelHeight ?? 0)"
+            showFooter("\(item.pixelWidth ?? 0) x \(item.pixelHeight ?? 0)", asAddress: false)
+        } else if item.kind == .link {
+            showLink(item, preview: preview)
         } else {
             previewImageView.image = nil
             previewImageView.isHidden = true
+            linkGlyph.isHidden = true
+            linkTitle.isHidden = true
             bodyLabel.isHidden = false
             if let language = item.codeLanguage {
                 showCode(item.text, as: language)
             } else {
-                showProse(item.preview)
+                // From `text`, not `preview`, for the same reason showCode is.
+                // `preview` is the stored search string and stops at 200
+                // characters, which is about eight lines here, so a long paste
+                // stopped two thirds of the way down the card with no way to
+                // tell that from the paste simply ending there.
+                showProse(flattenedBody(item.text, limit: CardItem.proseBodyLimit))
             }
-            countLabel.stringValue = "\(item.text.count) characters"
+            showFooter("\(item.text.count) characters", asAddress: false)
         }
         // The number is a keyboard shortcut, not a position. Only 1 to 9 can be
         // typed as Cmd+digit, so showing 10 and up would advertise a shortcut
@@ -247,6 +339,45 @@ final class CardItem: NSCollectionViewItem {
         indexLabel.stringValue = index < 9 ? "\(index + 1)" : ""
         rebuildBoardDots()
         applySelection()
+    }
+
+    /// A link card: the address always, the page's picture and title when we
+    /// have them.
+    ///
+    /// The compass is not an error state. It is what the card looks like before
+    /// anything has been fetched, when fetching is switched off, and when the
+    /// page turned out to have no picture to give. All three are the same thing
+    /// from the card's point of view: this is a link, and that is all we know.
+    private func showLink(_ item: HistoryItem, preview: LinkPreviewEntry?) {
+        bodyLabel.isHidden = true
+        let title = preview?.title
+        linkTitle.isHidden = title == nil
+        linkTitle.stringValue = title ?? ""
+
+        if let image = preview?.image {
+            previewImageView.image = image
+            previewImageView.frame = title == nil ? CardItem.bodyFrame : CardItem.linkImageFrame
+            previewImageView.isHidden = false
+            linkGlyph.isHidden = true
+        } else {
+            previewImageView.image = nil
+            previewImageView.isHidden = true
+            linkGlyph.frame = CardItem.glyphFrame(withTitle: title != nil)
+            linkGlyph.isHidden = false
+        }
+        showFooter(shortLinkLabel(item.text), asAddress: true)
+    }
+
+    /// The footer, in whichever of its two shapes this card needs.
+    ///
+    /// One function rather than three copies of the same three lines, because
+    /// the frame and the alignment have to be put back on a recycled cell and a
+    /// branch that forgot one would leave an address right-aligned into the
+    /// middle of the card.
+    private func showFooter(_ text: String, asAddress: Bool) {
+        countLabel.stringValue = text
+        countLabel.frame = asAddress ? CardItem.addressFrame : CardItem.countFrame
+        countLabel.alignment = asAddress ? .left : .right
     }
 
     /// The code body: real newlines, real indentation, monospaced, coloured.
@@ -312,12 +443,16 @@ final class CardItem: NSCollectionViewItem {
         let neutral = NSColor(calibratedWhite: 0.22, alpha: 1)
 
         // A pinned card wears its board's colour, so you can see what is filed
-        // where without switching tabs. The board colour outranks the selection
-        // blue; selection is carried by the border instead, which stays legible
-        // on any header colour.
+        // where without switching tabs. Nothing else changes the header.
+        //
+        // Selection used to repaint the header blue as well as draw the border.
+        // Two signals for one state, and on a pinned card only one of them
+        // could show, so the same keypress looked different depending on
+        // whether the card was filed. The border is now the only selection
+        // signal, which also leaves the header free to mean one thing: which
+        // board this is on.
         let boardColor = boardColors.first.map { BoardTabsView.color(named: $0) }
-        header.layer?.backgroundColor = (boardColor
-            ?? ((isSelected || itemKind == .link) ? blue : neutral)).cgColor
+        header.layer?.backgroundColor = (boardColor ?? neutral).cgColor
 
         // The body gets a faint wash of the same colour rather than the full
         // shade. A fully coloured body would make the text on it hard to read,
@@ -325,8 +460,10 @@ final class CardItem: NSCollectionViewItem {
         let base = NSColor(calibratedWhite: 0.13, alpha: 1)
         card.layer?.backgroundColor = (boardColor?.withAlphaComponent(0.14) ?? base).cgColor
 
-        // A thicker border when selected, because the header can no longer
-        // carry that signal on a pinned card.
+        // The whole selection signal. 3pt reads at a glance from a metre away,
+        // which is the distance you actually sit at while arrowing through the
+        // strip. Measured against 2pt, which disappeared against the dark
+        // background on a pinned card.
         card.layer?.borderColor = isSelected ? blue.cgColor : NSColor.clear.cgColor
         card.layer?.borderWidth = isSelected ? 3 : 0
     }
