@@ -3,7 +3,9 @@ import ClipdCore
 
 /// A borderless panel refuses to become key by default, and the search field
 /// then silently receives nothing at all. This override is not optional.
-private final class ClipdPanel: NSPanel {
+/// Internal rather than private only so PanelOpensOnTheRightScreenTests can
+/// close the panel it opens. Nothing outside this file builds one.
+final class ClipdPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
@@ -111,16 +113,19 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     // crash spread over more lines. Rejected too: `guard let` in the view code,
     // which would open the panel with no search field and log nothing, which is
     // worse than a crash because nobody would ever hear about it.
-    private let panel: ClipdPanel
+    let panel: ClipdPanel
     private let field: NSTextField
-    private let banner: NSTextField
+    // Internal, not private: PanelLayoutTests drives relayout(to:) and reads
+    // these frames back. The bug this guards against is invisible in the code,
+    // so the test has to look at the real views.
+    let banner: NSTextField
     private let collection: NSCollectionView
-    private let scroll: NSScrollView
-    private let emptyLabel: NSTextField
-    private let tabs: BoardTabsView
+    let scroll: NSScrollView
+    let emptyLabel: NSTextField
+    let tabs: BoardTabsView
 
-    /// The width the views were built at. show() resizes the panel to the real
-    /// screen on every open, so this is only a starting size.
+    /// The width the views were built at. show() resizes the panel and calls
+    /// relayout(to:) on every open, so this is only a starting size.
     private let initialWidth: CGFloat
 
     private var results: [HistoryItem] = []
@@ -191,8 +196,7 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         banner = PanelController.makeBanner(width: width)
         collection = PanelController.makeCollection()
         scroll = PanelController.makeScroll(width: width, document: collection)
-        emptyLabel = PanelController.makeEmptyLabel(width: width,
-                                                    centeredOn: scroll.frame)
+        emptyLabel = PanelController.makeEmptyLabel(width: width)
         super.init()
         build()
     }
@@ -209,8 +213,8 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     /// real state for a menu bar app that starts at login. 1440 is the number
     /// this code has always fallen back to, so it stays. A wrong guess costs
     /// nothing visible: show() calls onscreenFrame() and resizes the panel to
-    /// the real screen before it is ever seen, and the subviews that care about
-    /// width (the banner and the empty label) are only ever shown after that.
+    /// the real screen before it is ever seen, and relayout(to:) resizes every
+    /// width dependent subview with it on that same path.
     ///
     /// Rejected: refusing to build the panel when there is no screen. That
     /// needs the views back as optionals, which is the shape being removed.
@@ -245,9 +249,38 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         return field
     }
 
+    // MARK: - Width dependent frames
+    //
+    // Every view whose frame depends on the panel width gets exactly one
+    // function here, and both the build path and the resize path call it. Two
+    // copies of these numbers is how the panel came to be laid out for one
+    // screen while being displayed on another.
+
+    /// The board tabs sit to the right of the search field, with a fixed 30
+    /// point margin on the right. The floor stops them inverting on a very
+    /// narrow screen.
+    static func tabsFrame(width: CGFloat) -> NSRect {
+        NSRect(x: 490, y: barY + 11, width: max(width - 520, 200), height: 30)
+    }
+
+    /// Full width, inset 22 on both sides.
+    static func bannerFrame(width: CGFloat) -> NSRect {
+        NSRect(x: 22, y: barY + 10, width: max(width - 44, 1), height: 30)
+    }
+
+    /// The card strip spans the whole panel. This is the one that broke.
+    static func scrollFrame(width: CGFloat) -> NSRect {
+        NSRect(x: 0, y: 16, width: max(width, 1), height: scrollHeight)
+    }
+
+    /// Centred on the card strip, so it moves with it.
+    static func emptyLabelFrame(width: CGFloat) -> NSRect {
+        NSRect(x: 0, y: scrollFrame(width: width).midY - 20,
+               width: max(width, 1), height: 40)
+    }
+
     private static func makeTabs(width: CGFloat) -> BoardTabsView {
-        BoardTabsView(frame: NSRect(x: 490, y: barY + 11,
-                                    width: max(width - 520, 200), height: 30))
+        BoardTabsView(frame: tabsFrame(width: width))
     }
 
     /// The loud failure. Without Accessibility, macOS discards every
@@ -255,7 +288,7 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     /// perfectly healthy while pasting nothing.
     private static func makeBanner(width: CGFloat) -> NSTextField {
         let banner = NSTextField(labelWithString: "")
-        banner.frame = NSRect(x: 22, y: barY + 10, width: width - 44, height: 30)
+        banner.frame = bannerFrame(width: width)
         banner.font = .boldSystemFont(ofSize: 13)
         banner.textColor = .white
         banner.backgroundColor = .systemOrange
@@ -293,8 +326,7 @@ final class PanelController: NSObject, NSTextFieldDelegate,
 
     private static func makeScroll(width: CGFloat,
                                    document: NSCollectionView) -> NSScrollView {
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 16, width: width,
-                                                height: scrollHeight))
+        let scroll = NSScrollView(frame: scrollFrame(width: width))
         scroll.documentView = document
         scroll.hasHorizontalScroller = true
         scroll.hasVerticalScroller = false
@@ -306,11 +338,9 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     /// An empty panel with nothing in it reads as broken. Say which of the
     /// three empty cases it is, because they need different actions from the
     /// user.
-    private static func makeEmptyLabel(width: CGFloat,
-                                       centeredOn scrollFrame: NSRect) -> NSTextField {
+    private static func makeEmptyLabel(width: CGFloat) -> NSTextField {
         let emptyLabel = NSTextField(labelWithString: "")
-        emptyLabel.frame = NSRect(x: 0, y: scrollFrame.midY - 20,
-                                  width: width, height: 40)
+        emptyLabel.frame = emptyLabelFrame(width: width)
         emptyLabel.alignment = .center
         emptyLabel.font = .systemFont(ofSize: 13)
         emptyLabel.textColor = .secondaryLabelColor
@@ -452,11 +482,53 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         show()
     }
 
+    /// Which screen the panel belongs on, as one replaceable decision.
+    ///
+    /// Injectable for exactly one reason: the bug this file now guards against
+    /// only appears when the panel opens on a screen of a different width from
+    /// the one it was built for, and no single laptop can produce that on its
+    /// own. The test replaces this to pretend a 27 inch monitor is attached.
+    /// Production never touches it.
+    var screenFrame: () -> NSRect = {
+        NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+    }
+
     private func onscreenFrame() -> NSRect {
-        let screen = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let screen = screenFrame()
         // Flush to the bottom edge of the screen, full width.
         return NSRect(x: screen.minX, y: screen.minY,
                       width: screen.width, height: Self.panelHeight)
+    }
+
+    /// Re-lays out every width dependent view for a new panel width.
+    ///
+    /// This exists because of a real bug, so the reason is worth keeping. The
+    /// views are built once in init(), at whatever NSScreen.main happened to be
+    /// then. show() moves the panel onto whichever screen is main now and
+    /// stretches it to that screen's full width. Nothing resized the subviews
+    /// with it, and none of them carried an autoresizing mask, so the panel
+    /// stayed laid out for the screen the app was launched on.
+    ///
+    /// Measured on this machine: the built-in display is 1470 points wide and
+    /// an external 27 inch 1440p monitor is 2560. Launch on the built-in, open
+    /// the panel on the monitor, and the card strip was still 1470 wide inside
+    /// a 2560 wide window. With a 250 point card, 12 point gaps and a 22 point
+    /// inset that is five whole cards and then the sixth cut in half at x=1470,
+    /// with a thousand points of empty blur to the right of it. That is exactly
+    /// what the bug report showed.
+    ///
+    /// Rejected: autoresizing masks. They would hold the widths, but the layout
+    /// would then live in two places, these numbers and the springs, and the
+    /// next person moving a margin would have to find both.
+    func relayout(to width: CGFloat) {
+        tabs.frame = Self.tabsFrame(width: width)
+        banner.frame = Self.bannerFrame(width: width)
+        scroll.frame = Self.scrollFrame(width: width)
+        emptyLabel.frame = Self.emptyLabelFrame(width: width)
+        // The strip is a horizontal flow layout, so its content width is driven
+        // by the item count rather than by the clip view. Invalidating is what
+        // makes it recompute which items are inside the newly wider viewport.
+        collection.collectionViewLayout?.invalidateLayout()
     }
 
     /// Internal rather than private: the menu bar's Open Clipd item calls it.
@@ -465,6 +537,12 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     func show() {
         previousApp = NSWorkspace.shared.frontmostApplication
         field.stringValue = ""
+
+        // First, before refreshTabs, reload or updateTrustBanner read a width.
+        // The panel can open on a different screen every single time.
+        let target = onscreenFrame()
+        relayout(to: target.width)
+
         (boards, membership) = boardProvider()
         if let current = selectedBoard, !boards.contains(where: { $0.id == current }) {
             // Deleted on the other Mac. Fall back to everything rather than
@@ -475,7 +553,6 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         reload()
         updateTrustBanner()
 
-        let target = onscreenFrame()
         // Start below the screen edge and slide up.
         var start = target
         start.origin.y = target.minY - Self.panelHeight
