@@ -131,24 +131,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 history.load(try store.loadAll(limit: 500))
                 Diag.panel.info("item renamed, named now \(title != nil, privacy: .public)")
                 rebuildMenu()
+                scheduleAutoSync(reason: "after a rename")
             } catch {
                 Diag.panel.error("rename failed: \(String(describing: error), privacy: .public)")
             }
         }
+        // Each of these nudges the sync, for the same reason a copy does.
+        //
+        // Without it, changing a board only travelled on the next five minute
+        // tick, and then the other Mac waited for ITS tick, so filing an item
+        // could take ten minutes to appear. Measured: a filing made at about
+        // 22:15 reached the bucket at 22:18:38, on the timer, not on the
+        // action. Copying had always nudged it; nothing else did.
         panelController.onCreateBoard = { [weak self] name in
             try? self?.store?.createPinboard(name: name)
+            self?.scheduleAutoSync(reason: "after a board change")
         }
         panelController.onDeleteBoard = { [weak self] id in
             try? self?.store?.deletePinboard(id: id)
+            self?.scheduleAutoSync(reason: "after a board change")
         }
         panelController.onRenameBoard = { [weak self] id, name in
             try? self?.store?.renamePinboard(id: id, to: name)
+            self?.scheduleAutoSync(reason: "after a board change")
         }
         panelController.onToggleMembership = { [weak self] item, board in
-            guard let store = self?.store else { return }
+            guard let self, let store = self.store else { return }
             let already = ((try? store.membership())?[board] ?? []).contains(item)
             try? store.setMembership(item: item, board: board, on: !already)
             Diag.panel.info("board membership now \(!already, privacy: .public)")
+            self.scheduleAutoSync(reason: "after filing")
         }
         panelController.onCommit = { item, target in
             let ok = Paster.paste(item, into: target)
@@ -699,13 +711,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Called after every capture. Waits for you to stop copying, so pasting a
-    /// run of things produces one sync rather than ten.
-    private func scheduleAutoSync() {
+    /// Called after anything that changes state the other Mac should see: a
+    /// capture, a filing, a board edit, a rename.
+    ///
+    /// Debounced, so filing six items in a row produces one sync rather than
+    /// six. The reason travels into the log so it is possible to tell, from the
+    /// log alone, whether a sync happened because of something you did or
+    /// because the five minute timer came round.
+    private func scheduleAutoSync(reason: String = "after a copy") {
         guard settings.autoSyncEnabled else { return }
         syncDebounce?.invalidate()
         syncDebounce = Timer.scheduledTimer(withTimeInterval: 15, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.autoSync(reason: "after a copy") }
+            MainActor.assumeIsolated { self?.autoSync(reason: reason) }
         }
     }
 
