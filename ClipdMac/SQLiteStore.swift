@@ -864,7 +864,13 @@ final class SQLiteStore {
             }
     }
 
-    /// A board plus its memberships, so the two cannot arrive separately.
+    /// The board row alone.
+    ///
+    /// Memberships used to ride along inside this payload. They do not any
+    /// more, because the board's own `updated_at` never moved when an item was
+    /// filed, so this payload was never shipped and the filing never left the
+    /// Mac that made it. They are their own sync records now. See
+    /// `membershipRecords` and ClipdCore's `membershipID`.
     func boardPayload(for id: UUID) throws -> Data? {
         let rows = try db.query("""
             SELECT id, name, color, sort_order, updated_at, deleted_at, device_id
@@ -879,22 +885,6 @@ final class SQLiteStore {
             case .blob, .null: break
             }
         }
-        var members: [[String: Any]] = []
-        for m in try db.query("""
-            SELECT item_id, updated_at, deleted_at, device_id
-            FROM item_pinboards WHERE pinboard_id = ?
-            """, [.text(id.uuidString)]) {
-            var entry: [String: Any] = [:]
-            for (name, value) in m {
-                switch value {
-                case .text(let s): entry[name] = s
-                case .int(let n): entry[name] = n
-                case .blob, .null: break
-                }
-            }
-            members.append(entry)
-        }
-        json["members"] = members
         return try JSONSerialization.data(withJSONObject: json)
     }
 
@@ -915,19 +905,88 @@ final class SQLiteStore {
             """, [.text(id.uuidString), text("name"), text("color"), int("sort_order"),
                   int("updated_at"), int("deleted_at"), text("device_id")])
 
-        for entry in (json["members"] as? [[String: Any]] ?? []) {
-            guard let itemString = entry["item_id"] as? String else { continue }
-            func mText(_ k: String) -> SQLValue { (entry[k] as? String).map { SQLValue.text($0) } ?? .null }
-            func mInt(_ k: String) -> SQLValue {
-                (entry[k] as? Int64).map { SQLValue.int($0) }
-                    ?? (entry[k] as? Int).map { SQLValue.int(Int64($0)) } ?? .null
+    }
+
+    // MARK: - Membership sync
+
+    /// Memberships as sync records, tombstones included so un-filing travels
+    /// too.
+    ///
+    /// Keyed by the derived pair id, because `planSync` and the bucket keys
+    /// both speak a single UUID. See ClipdCore's `membershipID` for why the id
+    /// is derived rather than stored.
+    func membershipRecords() throws -> [SyncRecord] {
+        try db.query("""
+            SELECT item_id, pinboard_id, updated_at, deleted_at, device_id
+            FROM item_pinboards
+            """, [])
+            .compactMap { row in
+                guard case .text(let i)? = row["item_id"], let item = UUID(uuidString: i),
+                      case .text(let b)? = row["pinboard_id"], let board = UUID(uuidString: b),
+                      case .int(let updated)? = row["updated_at"],
+                      case .text(let device)? = row["device_id"] else { return nil }
+                var deletedAt: Date?
+                if case .int(let d)? = row["deleted_at"] {
+                    deletedAt = Date(timeIntervalSince1970: Double(d) / 1000)
+                }
+                return SyncRecord(id: membershipID(item: item, board: board),
+                                  updatedAt: Date(timeIntervalSince1970: Double(updated) / 1000),
+                                  deletedAt: deletedAt, deviceID: device)
             }
-            try db.run("""
-                INSERT OR REPLACE INTO item_pinboards
-                  (item_id, pinboard_id, updated_at, deleted_at, device_id)
-                VALUES (?,?,?,?,?)
-                """, [.text(itemString), .text(id.uuidString), mInt("updated_at"),
-                      mInt("deleted_at"), mText("device_id")])
+    }
+
+    /// One membership, found by its derived id.
+    ///
+    /// The derivation is one way, so this scans. Deliberately: a history holds
+    /// a few hundred filings at most, and the alternative is storing the
+    /// derived id in a column, which is a second source of truth that can
+    /// disagree with the derivation after any change to it.
+    func membershipPayload(for id: UUID) throws -> Data? {
+        for row in try db.query("""
+            SELECT item_id, pinboard_id, updated_at, deleted_at, device_id
+            FROM item_pinboards
+            """, []) {
+            guard case .text(let i)? = row["item_id"], let item = UUID(uuidString: i),
+                  case .text(let b)? = row["pinboard_id"], let board = UUID(uuidString: b),
+                  membershipID(item: item, board: board) == id else { continue }
+            var json: [String: Any] = [:]
+            for (name, value) in row {
+                switch value {
+                case .text(let s): json[name] = s
+                case .int(let n): json[name] = n
+                case .blob, .null: break
+                }
+            }
+            return try JSONSerialization.data(withJSONObject: json)
         }
+        return nil
+    }
+
+    /// Last writer wins, per filing.
+    ///
+    /// The timestamp check is the half the old board payload was missing. It
+    /// used INSERT OR REPLACE with no comparison, so a stale payload could
+    /// un-file something that had just been filed on this Mac.
+    func applyMembership(payload: Data) throws {
+        guard let json = try JSONSerialization.jsonObject(with: payload) as? [String: Any],
+              let itemString = json["item_id"] as? String,
+              let boardString = json["pinboard_id"] as? String,
+              let incoming = (json["updated_at"] as? Int64)
+                ?? (json["updated_at"] as? Int).map(Int64.init)
+        else { return }
+
+        let existing = try db.query("""
+            SELECT updated_at FROM item_pinboards WHERE item_id = ? AND pinboard_id = ?
+            """, [.text(itemString), .text(boardString)])
+        if case .int(let mine)? = existing.first?["updated_at"], mine > incoming { return }
+
+        let deleted: SQLValue = (json["deleted_at"] as? Int64).map { SQLValue.int($0) }
+            ?? (json["deleted_at"] as? Int).map { SQLValue.int(Int64($0)) } ?? .null
+        try db.run("""
+            INSERT OR REPLACE INTO item_pinboards
+              (item_id, pinboard_id, updated_at, deleted_at, device_id)
+            VALUES (?,?,?,?,?)
+            """, [.text(itemString), .text(boardString), .int(incoming), deleted,
+                  .text(json["device_id"] as? String ?? "unknown")])
     }
 }

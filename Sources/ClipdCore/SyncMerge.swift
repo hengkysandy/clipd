@@ -19,16 +19,29 @@ public struct SyncRecord: Codable, Equatable, Sendable {
 public struct SyncManifest: Codable, Equatable, Sendable {
     public let deviceID: String
     public let records: [SyncRecord]
-    /// Boards and memberships, merged by exactly the same rules as items.
+    /// Boards, merged by exactly the same rules as items.
     ///
     /// Defaulted so a manifest written by an older build still decodes. Failing
     /// to decode would strand the pair, each unable to read the other.
     public var boards: [SyncRecord] = []
 
-    public init(deviceID: String, records: [SyncRecord], boards: [SyncRecord] = []) {
+    /// Which items are filed on which boards, as records of their own.
+    ///
+    /// Their own stream rather than a field inside each board, because one
+    /// timestamp per board cannot say "I hold a filing you do not". Measured:
+    /// with memberships carried inside the board payload, two Macs that each
+    /// filed a different item onto the same board each kept only their own,
+    /// forever. See BoardMembershipSyncTests.
+    ///
+    /// Defaulted for the same reason as `boards`.
+    public var memberships: [SyncRecord] = []
+
+    public init(deviceID: String, records: [SyncRecord], boards: [SyncRecord] = [],
+                memberships: [SyncRecord] = []) {
         self.deviceID = deviceID
         self.records = records
         self.boards = boards
+        self.memberships = memberships
     }
 
     /// Written by hand because Swift's synthesized Decodable does NOT fall back
@@ -42,10 +55,11 @@ public struct SyncManifest: Codable, Equatable, Sendable {
         deviceID = try container.decode(String.self, forKey: .deviceID)
         records = try container.decode([SyncRecord].self, forKey: .records)
         boards = try container.decodeIfPresent([SyncRecord].self, forKey: .boards) ?? []
+        memberships = try container.decodeIfPresent([SyncRecord].self, forKey: .memberships) ?? []
     }
 
     enum CodingKeys: String, CodingKey {
-        case deviceID, records, boards
+        case deviceID, records, boards, memberships
     }
 }
 

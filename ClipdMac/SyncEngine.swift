@@ -52,13 +52,17 @@ final class SyncEngine {
         let local = try store.allRecords()
 
         // Every manifest except our own. Ours describes what we already know.
-        var remote: [SyncRecord] = []
+        //
+        // Read ONCE and reused for items, boards and memberships below. This
+        // used to be a separate list-and-get pass per record type, which was
+        // three times the R2 requests for exactly the same bytes.
+        var remoteManifests: [SyncManifest] = []
         for manifestKey in try await client.list(prefix: prefix + "manifests/")
         where !manifestKey.hasSuffix("\(deviceID).json.enc") {
             guard let sealed = try await client.get(manifestKey) else { continue }
             do {
                 let plain = try SyncCrypto.open(sealed, with: key)
-                remote.append(contentsOf: try JSONDecoder().decode(SyncManifest.self, from: plain).records)
+                remoteManifests.append(try JSONDecoder().decode(SyncManifest.self, from: plain))
             } catch {
                 // A manifest we cannot decrypt means a different passphrase.
                 // Skipping is right: overwriting it would destroy the other
@@ -66,6 +70,7 @@ final class SyncEngine {
                 Diag.sync.error("skipping an undecryptable manifest")
             }
         }
+        let remote = remoteManifests.flatMap(\.records)
 
         var uploaded = 0, downloaded = 0, tombstoned = 0, pruned = 0
 
@@ -142,15 +147,7 @@ final class SyncEngine {
 
         // Boards, by exactly the same rules. Kept separate from items so a
         // board can never be mistaken for a clipping.
-        var remoteBoards: [SyncRecord] = []
-        for manifestKey in try await client.list(prefix: prefix + "manifests/")
-        where !manifestKey.hasSuffix("\(deviceID).json.enc") {
-            guard let sealed = try await client.get(manifestKey),
-                  let plain = try? SyncCrypto.open(sealed, with: key),
-                  let manifest = try? JSONDecoder().decode(SyncManifest.self, from: plain)
-            else { continue }
-            remoteBoards.append(contentsOf: manifest.boards)
-        }
+        let remoteBoards = remoteManifests.flatMap(\.boards)
 
         for action in planSync(local: try store.boardRecords(), remote: remoteBoards) {
             switch action {
@@ -169,10 +166,41 @@ final class SyncEngine {
             }
         }
 
+        // Memberships, by the same rules again, and as their own records
+        // rather than a field inside each board.
+        //
+        // Measured before this existed: a board's own updated_at never moved
+        // when an item was filed onto it, so planSync saw no change and the
+        // filing never left the Mac that made it. Bumping the board's
+        // timestamp would not have been enough either, because one timestamp
+        // per board cannot say "I hold a filing you do not", and two Macs that
+        // each filed a different item onto the same board each kept only their
+        // own. Both cases are in BoardMembershipSyncTests.
+        let remoteMemberships = remoteManifests.flatMap(\.memberships)
+
+        for action in planSync(local: try store.membershipRecords(),
+                               remote: remoteMemberships) {
+            switch action {
+            case .upload(let id):
+                guard let payload = try store.membershipPayload(for: id) else { continue }
+                _ = try await client.put(prefix + "memberships/\(id.uuidString).enc",
+                                         try SyncCrypto.seal(payload, with: key))
+            case .download(let id), .applyTombstone(let id):
+                // A tombstoned filing still needs its row: the deleted_at on it
+                // is what un-files the item on this Mac.
+                guard let sealed = try await client.get(prefix + "memberships/\(id.uuidString).enc")
+                else { continue }
+                try store.applyMembership(payload: try SyncCrypto.open(sealed, with: key))
+            case .nothing:
+                break
+            }
+        }
+
         // Our manifest last, so it only ever claims things we really uploaded.
         let manifest = SyncManifest(deviceID: deviceID,
                                     records: try store.allRecords(),
-                                    boards: try store.boardRecords())
+                                    boards: try store.boardRecords(),
+                                    memberships: try store.membershipRecords())
         let sealed = try SyncCrypto.seal(try JSONEncoder().encode(manifest), with: key)
         _ = try await client.put(prefix + "manifests/\(deviceID).json.enc", sealed)
 
