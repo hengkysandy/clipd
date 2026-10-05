@@ -131,6 +131,10 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     private var results: [HistoryItem] = []
     private var selection: Int = 0
     private var isDismissing = false
+    /// True while a card title is being edited in place. The panel's own key
+    /// equivalents stand down for the duration, or typing a name containing a
+    /// digit would file the item onto a board instead.
+    private var editingTitle = false
     /// True while one of our own dialogs is up.
     ///
     /// A modal alert takes key focus, which fires the resign-key handler and
@@ -377,7 +381,10 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         panel.onPasteNumber = { [weak self] digit in
             // Only what is on screen. The card numbers stop at 9 and so does
             // this, so the shortcut can never reach a card the user cannot see.
-            guard let self, digit <= self.results.count else { return false }
+            // Not while a title is being typed: "Photo 2" would otherwise
+            // paste card 2 halfway through the word.
+            guard let self, !self.editingTitle,
+                  digit <= self.results.count else { return false }
             self.selection = digit - 1
             self.applySelection(scroll: true)
             self.commitSelection()
@@ -385,7 +392,7 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         }
 
         panel.onBoardNumber = { [weak self] digit in
-            guard let self, digit <= self.boards.count,
+            guard let self, !self.editingTitle, digit <= self.boards.count,
                   self.selection >= 0, self.selection < self.results.count else { return false }
             let board = self.boards[digit - 1]
             let item = self.results[self.selection]
@@ -396,7 +403,7 @@ final class PanelController: NSObject, NSTextFieldDelegate,
         }
 
         panel.onBoardStep = { [weak self] step in
-            guard let self, !self.boards.isEmpty else { return false }
+            guard let self, !self.editingTitle, !self.boards.isEmpty else { return false }
             // Clipboard sits at index 0, so the list is boards.count + 1 wide
             // and wraps at both ends.
             let current = self.selectedBoard.flatMap { id in
@@ -461,6 +468,39 @@ final class PanelController: NSObject, NSTextFieldDelegate,
 
         content.addSubview(scroll)
         content.addSubview(emptyLabel)
+    }
+
+    /// A click on a card's title line.
+    ///
+    /// The Finder rule: the first click selects the card, and a click on the
+    /// title of the card that is ALREADY selected starts the rename. That is
+    /// what keeps clicking a card to select it from turning into an accidental
+    /// edit, and it leaves Enter-to-paste and double-click-to-paste alone.
+    private func titleClicked(at index: Int) {
+        guard index >= 0, index < results.count else { return }
+        guard index == selection else {
+            handleCardClick(index: index, clickCount: 1)
+            return
+        }
+        beginEditingTitle(at: index)
+    }
+
+    private func beginEditingTitle(at index: Int) {
+        guard let card = collection.item(at: IndexPath(item: index, section: 0))
+                as? CardItem else { return }
+        editingTitle = true
+        card.beginEditingTitle()
+    }
+
+    private func commitTitle(_ title: String?, at index: Int) {
+        editingTitle = false
+        // Back to the search field, or the next keystroke goes nowhere and the
+        // panel looks frozen.
+        panel.makeFirstResponder(field)
+        guard index >= 0, index < results.count else { return }
+        let item = results[index]
+        guard title != item.title else { return }
+        applyTitle(title, to: item.id)
     }
 
     /// One click selects, two pastes. Clicks arrive from the card itself, not
@@ -1085,6 +1125,12 @@ final class PanelController: NSObject, NSTextFieldDelegate,
             }
             card.onRightClick = { [weak self] index, event in
                 self?.showCardMenu(index: index, event: event)
+            }
+            card.onTitleClick = { [weak self] index in
+                self?.titleClicked(at: index)
+            }
+            card.onCommitTitle = { [weak self] index, title in
+                self?.commitTitle(title, at: index)
             }
         }
         return cell

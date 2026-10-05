@@ -36,11 +36,13 @@ private let relativeFormatter: RelativeDateTimeFormatter = {
 /// works and also makes selection deterministic rather than dependent on the
 /// collection view's internal hit testing.
 private final class CardRootView: NSView {
-    var onClick: ((Int) -> Void)?
+    /// (clickCount, point in this view's coordinates). The point is what lets
+    /// the title line behave differently from the rest of the card.
+    var onClick: ((Int, NSPoint) -> Void)?
     var onRightClick: ((NSEvent) -> Void)?
 
     override func mouseDown(with event: NSEvent) {
-        onClick?(event.clickCount)
+        onClick?(event.clickCount, convert(event.locationInWindow, from: nil))
     }
 
     /// Right click and control click both open the card menu.
@@ -57,7 +59,7 @@ private final class CardRootView: NSView {
 ///
 /// Built in code rather than a nib. Rejected: a xib, because XcodeGen would
 /// have to carry a resources block for one view and the layout is 40 lines.
-final class CardItem: NSCollectionViewItem {
+final class CardItem: NSCollectionViewItem, NSTextFieldDelegate {
     static let identifier = NSUserInterfaceItemIdentifier("CardItem")
     /// Height must be no larger than PanelController.scrollHeight, or the card
     /// footers clip against the bottom screen edge. Measured: at 290 in a
@@ -146,12 +148,35 @@ final class CardItem: NSCollectionViewItem {
     var onClick: ((Int, Int) -> Void)?
     /// Called with (index, event) on a right or control click.
     var onRightClick: ((Int, NSEvent) -> Void)?
+    /// A single click landed on the title line.
+    ///
+    /// The card does NOT decide what that means, because only the controller
+    /// knows which card is selected. Clicking the title of an unselected card
+    /// just selects it; clicking the title of the selected card renames it.
+    /// That is the Finder idiom, and it is what keeps click-to-select,
+    /// Enter-to-paste and double-click-to-paste all working unchanged.
+    var onTitleClick: ((Int) -> Void)?
+    /// A rename was committed. nil means the name was removed.
+    var onCommitTitle: ((Int, String?) -> Void)?
+
+    private(set) var isEditingTitle = false
+    /// What the label has to go back to if the edit is cancelled. A recycled
+    /// cell makes "just reload it" unreliable, so the card remembers.
+    private var titleBeforeEditing: String?
+    /// Lives only while a rename is in progress. See beginEditingTitle.
+    private var titleEditor: NSTextField?
+    private var kindNameForLabel = "Text"
 
     override func loadView() {
         let root = CardRootView(frame: NSRect(origin: .zero, size: CardItem.size))
         root.wantsLayer = true
-        root.onClick = { [weak self] count in
+        root.onClick = { [weak self] count, point in
             guard let self else { return }
+            if self.isEditingTitle { return }
+            if count == 1, self.titleHitRect.contains(point) {
+                self.onTitleClick?(self.index)
+                return
+            }
             self.onClick?(self.index, count)
         }
         root.onRightClick = { [weak self] event in
@@ -272,6 +297,110 @@ final class CardItem: NSCollectionViewItem {
         return relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
 
+    // MARK: - Renaming in place
+
+    /// Where a click counts as "the title", in the root view's coordinates.
+    ///
+    /// Taken from the label's own frame rather than written out again, so
+    /// moving the label moves the target with it. The slack is deliberate: an
+    /// 18 point strip is a small thing to hit, and missing it does nothing
+    /// visible, which reads as the feature being broken.
+    private var titleHitRect: NSRect {
+        guard header != nil, kindLabel != nil else { return .zero }
+        return header.convert(kindLabel.frame, to: view).insetBy(dx: -4, dy: -5)
+    }
+
+    /// Shows a text field on top of the title label.
+    ///
+    /// An overlay rather than making the label itself editable. The in place
+    /// version was written first and was wrong: turning the label bezeled and
+    /// back left cell state behind that `isBordered = false` and
+    /// `isBezeled = false` did not clear, so a cancelled rename drew the title
+    /// about four points right of every other card and stayed that way until
+    /// the cell was recycled. Measured on screen, twice. An overlay cannot
+    /// drift, because the label is never modified at all.
+    ///
+    /// The editor takes its frame and font FROM the label, so the two cannot
+    /// disagree, which was the original objection to an overlay.
+    func beginEditingTitle() {
+        guard !isEditingTitle, kindLabel != nil, header != nil else { return }
+        isEditingTitle = true
+
+        let editor = NSTextField(frame: kindLabel.frame)
+        editor.font = kindLabel.font
+        editor.isEditable = true
+        editor.isSelectable = true
+        editor.isBezeled = true
+        editor.bezelStyle = .roundedBezel
+        editor.drawsBackground = true
+        editor.backgroundColor = .textBackgroundColor
+        editor.textColor = .labelColor
+        editor.lineBreakMode = .byTruncatingTail
+        // An unnamed item shows its KIND here, which is not a name and must not
+        // become one by accident, so the field starts empty and offers the
+        // placeholder instead of pre-filling "Text".
+        editor.placeholderString = "Name this item"
+        editor.stringValue = titleBeforeEditing ?? ""
+        editor.delegate = self
+        header.addSubview(editor)
+        titleEditor = editor
+
+        kindLabel.isHidden = true
+        view.window?.makeFirstResponder(editor)
+        editor.currentEditor()?.selectAll(nil)
+    }
+
+    /// Removes the editor and shows the label again, untouched.
+    func endEditingTitle(commit: Bool) {
+        guard isEditingTitle else { return }
+        let typed = (titleEditor?.stringValue ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Cleared first, so the notifications that removing the editor fires
+        // cannot run back into here a second time.
+        isEditingTitle = false
+        titleEditor?.delegate = nil
+        titleEditor?.removeFromSuperview()
+        titleEditor = nil
+        kindLabel?.isHidden = false
+        if commit {
+            // An emptied field means "remove the name", the same as the Remove
+            // Name menu item. Rejected: treating empty as cancel, which leaves
+            // no way to undo a name without the menu.
+            onCommitTitle?(index, typed.isEmpty ? nil : typed)
+        }
+    }
+
+    /// Enter commits, Escape cancels. Everything else is ordinary typing.
+    func control(_ control: NSControl, textView: NSTextView,
+                 doCommandBy selector: Selector) -> Bool {
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)):
+            endEditingTitle(commit: true)
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            // Consumed here on purpose. Without this the panel's own Escape
+            // handling would close the whole panel out from under the edit.
+            endEditingTitle(commit: false)
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Clicking away saves, which is what the Finder does and what people
+    /// expect. Losing the edit because you clicked the wrong thing would be
+    /// the surprising half.
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard isEditingTitle else { return }
+        endEditingTitle(commit: true)
+    }
+
+    /// A cell going back on the pile must never still be editing.
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        if isEditingTitle { endEditingTitle(commit: false) }
+    }
+
     func configure(with item: HistoryItem, index: Int, boardColors: [String] = [],
                    preview: LinkPreviewEntry? = nil) {
         self.index = index
@@ -290,6 +419,11 @@ final class CardItem: NSCollectionViewItem {
         // to call it. The kind drops down to join the age, so nothing is lost.
         // Rejected: a third line for the title, which would cost every card
         // eighteen points of body height to serve the few that are named.
+        // A cell being reconfigured must never still be in edit mode, or the
+        // editor would sit on top of a different item's card.
+        if isEditingTitle { endEditingTitle(commit: false) }
+        kindNameForLabel = kindName
+        titleBeforeEditing = item.title
         if let title = item.title {
             kindLabel.stringValue = title
             timeLabel.stringValue = "\(kindName) \u{00B7} \(CardItem.age(of: item.createdAt))"

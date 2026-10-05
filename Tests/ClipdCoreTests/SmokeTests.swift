@@ -3,5 +3,5 @@ import Testing
 
 @Test("Core is reachable and reports its version")
 func coreVersion() {
-    #expect(ClipdCore.version == "0.8.3")
+    #expect(ClipdCore.version == "0.9.0")
 }

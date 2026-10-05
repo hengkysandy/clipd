@@ -9,11 +9,25 @@ public struct DedupPlan: Equatable, Sendable {
     /// The survivor inherits it, so folding two copies does not drag the item
     /// back down the history to the age of the older one.
     public let newestCreatedAt: Date
+    /// A name to move onto the survivor, or nil.
+    ///
+    /// Set only when the survivor has no name of its own and a row being
+    /// folded away does. Without this the name is silently destroyed: the
+    /// survivor is chosen by lowest id, which has nothing to do with which row
+    /// the user bothered to name. Measured on a real history: an item named
+    /// "Rename works 2" became "Text" again the next time dedup ran, with no
+    /// message anywhere, because the copy that survived was the unnamed one.
+    ///
+    /// A name the user typed is the one part of an item that cannot be
+    /// recovered from anywhere else, so it outranks the id rule.
+    public let titleToAdopt: String?
 
-    public init(survivor: UUID, doomed: [UUID], newestCreatedAt: Date) {
+    public init(survivor: UUID, doomed: [UUID], newestCreatedAt: Date,
+                titleToAdopt: String? = nil) {
         self.survivor = survivor
         self.doomed = doomed
         self.newestCreatedAt = newestCreatedAt
+        self.titleToAdopt = titleToAdopt
     }
 }
 
@@ -59,7 +73,24 @@ public func planDedup(_ items: [HistoryItem], pinned: Set<UUID> = []) -> [DedupP
         guard !doomed.isEmpty else { return nil }
 
         let newest = group.map(\.createdAt).max() ?? survivor.createdAt
-        return DedupPlan(survivor: survivor.id, doomed: doomed, newestCreatedAt: newest)
+
+        // Rescue a name off a row that is about to disappear.
+        //
+        // Never overwrites a name the survivor already has. When more than one
+        // doomed row is named, the newest wins, on the same reasoning as
+        // newestCreatedAt: the most recent thing the user did is the thing they
+        // meant. Deterministic on both Macs, because createdAt and the id
+        // tiebreak are both in the synced row.
+        let adopted: String? = survivor.title != nil ? nil
+            : group.filter { $0.id != survivor.id && $0.title != nil }
+                   .max { a, b in
+                       a.createdAt == b.createdAt
+                           ? a.id.uuidString < b.id.uuidString
+                           : a.createdAt < b.createdAt
+                   }?.title
+
+        return DedupPlan(survivor: survivor.id, doomed: doomed,
+                         newestCreatedAt: newest, titleToAdopt: adopted)
     }
     // Stable order, so the same input always yields the same plan and two runs
     // can be compared.

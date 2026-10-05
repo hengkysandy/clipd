@@ -130,3 +130,55 @@ func convergesAfterOnePass() {
     let items = [item("a", id: lowID), item("b", id: highID)]
     #expect(planDedup(items).isEmpty)
 }
+
+/// A name is the one part of an item that exists nowhere else. Folding a
+/// duplicate must not throw it away.
+struct DedupKeepsNamesTests {
+    private func item(_ id: String, text: String, title: String? = nil,
+                      createdAt: Date = Date(timeIntervalSince1970: 1000)) -> HistoryItem {
+        HistoryItem(id: UUID(uuidString: id)!, text: text,
+                    sourceBundleID: nil, sourceName: nil, createdAt: createdAt,
+                    title: title)
+    }
+
+    /// The exact shape measured on a real history: the named copy had the
+    /// HIGHER id, so the id rule kept the unnamed one and the name vanished.
+    @Test func aNameIsRescuedFromTheRowBeingFoldedAway() {
+        let plans = planDedup([
+            item("00000000-0000-0000-0000-000000000001", text: "same"),
+            item("FFFFFFFF-0000-0000-0000-000000000001", text: "same", title: "Rename works 2"),
+        ])
+        #expect(plans.count == 1)
+        #expect(plans[0].survivor == UUID(uuidString: "00000000-0000-0000-0000-000000000001"))
+        #expect(plans[0].titleToAdopt == "Rename works 2")
+    }
+
+    @Test func theSurvivorsOwnNameIsNeverOverwritten() {
+        let plans = planDedup([
+            item("00000000-0000-0000-0000-000000000001", text: "same", title: "Mine"),
+            item("FFFFFFFF-0000-0000-0000-000000000001", text: "same", title: "Theirs"),
+        ])
+        #expect(plans[0].titleToAdopt == nil, "the survivor already has a name")
+    }
+
+    @Test func nothingToAdoptWhenNoCopyWasEverNamed() {
+        let plans = planDedup([
+            item("00000000-0000-0000-0000-000000000001", text: "same"),
+            item("FFFFFFFF-0000-0000-0000-000000000001", text: "same"),
+        ])
+        #expect(plans[0].titleToAdopt == nil)
+    }
+
+    /// Two named copies, neither of them the survivor. The newest name wins,
+    /// and both Macs must reach that answer from the synced row alone.
+    @Test func theNewestNameWinsAmongSeveralDoomedRows() {
+        let plans = planDedup([
+            item("00000000-0000-0000-0000-000000000001", text: "same"),
+            item("AAAAAAAA-0000-0000-0000-000000000001", text: "same", title: "Older",
+                 createdAt: Date(timeIntervalSince1970: 1000)),
+            item("FFFFFFFF-0000-0000-0000-000000000001", text: "same", title: "Newer",
+                 createdAt: Date(timeIntervalSince1970: 2000)),
+        ])
+        #expect(plans[0].titleToAdopt == "Newer")
+    }
+}

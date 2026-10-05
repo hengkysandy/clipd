@@ -23,6 +23,11 @@ func applyDedup(in store: SQLiteStore, items: [HistoryItem], pinned: Set<UUID>) 
         // history, and does not expose it to a retention sweep that would have
         // expired the older copy.
         try store.touch(id: plan.survivor, at: plan.newestCreatedAt)
+        // Before the doomed rows are tombstoned, not after: setTitle reads the
+        // survivor, and the name has to land somewhere that outlives the fold.
+        if let adopted = plan.titleToAdopt {
+            try store.setTitle(adopted, for: plan.survivor)
+        }
         for id in plan.doomed {
             // A TOMBSTONE, not a hard delete.
             //
