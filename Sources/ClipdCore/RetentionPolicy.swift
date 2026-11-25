@@ -48,8 +48,24 @@ public func itemsToExpire(_ items: [HistoryItem],
                           policy: RetentionPolicy,
                           pinned: Set<UUID>,
                           now: Date) -> [UUID] {
+    idsToExpire(items.map { (id: $0.id, createdAt: $0.createdAt) },
+                policy: policy, pinned: pinned, now: now)
+}
+
+/// The same rule over ids and dates alone.
+///
+/// This is the form the app runs, against EVERY stored item. The sweep used to
+/// run against the in-memory history, which holds only the newest 500, so once
+/// a history passed 500 items nothing older was ever looked at, and "items
+/// older than six months are removed" silently stopped being true. Ids and
+/// dates are all the rule needs, so the store can hand over every row without
+/// loading a single image to do it.
+public func idsToExpire(_ entries: [(id: UUID, createdAt: Date)],
+                        policy: RetentionPolicy,
+                        pinned: Set<UUID>,
+                        now: Date) -> [UUID] {
     guard let maxAge = policy.maxAge else { return [] }
-    return items.compactMap { item in
+    return entries.compactMap { item in
         // Pinned wins over everything. Otherwise a one week setting quietly
         // eats the snippets that were deliberately kept.
         guard !pinned.contains(item.id) else { return nil }

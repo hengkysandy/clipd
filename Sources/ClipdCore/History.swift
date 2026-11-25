@@ -61,6 +61,20 @@ public final class History {
         onDelete?(removed.id)
     }
 
+    /// Drops one item from memory only, without calling `onDelete`.
+    ///
+    /// For when the store has already been told. The Delete key now deletes in
+    /// the store first, because the item may be one of the many the in-memory
+    /// history never held: `remove(id:)` only reaches the store when the item
+    /// is among the newest 500, so deleting anything older from search or a
+    /// board tab did nothing at all and the card simply stayed.
+    @discardableResult
+    public func discard(id: UUID) -> Bool {
+        guard let index = storage.firstIndex(where: { $0.id == id }) else { return false }
+        storage.remove(at: index)
+        return true
+    }
+
     /// Deletes one item by identity. Returns true if something was removed.
     ///
     /// Identity rather than index, because the panel filters: the card at
@@ -79,19 +93,31 @@ public final class History {
     /// copied 30 seconds ago under an older better match. A clipboard history
     /// is a timeline.
     public func search(_ query: String) -> [HistoryItem] {
-        let tokens = query.lowercased()
-            .split(separator: " ", omittingEmptySubsequences: true)
-            .map(String.init)
-        guard !tokens.isEmpty else { return storage }
-        return storage.filter { item in
-            // Preview as well as text, so images are reachable. An image has no
-            // text at all, and its preview is "Image 2560 x 1664", which makes
-            // typing "image" or a dimension find it.
-            //
-            // The title too, which is the whole point of naming an item: a name
-            // makes it findable by a word that appears nowhere in the content.
-            let haystack = (item.text + " " + item.preview + " " + (item.title ?? "")).lowercased()
-            return tokens.allSatisfy { haystack.contains($0) }
-        }
+        filterByQuery(storage, query)
+    }
+}
+
+/// The one matching rule for typed text, for any list of items.
+///
+/// A free function so the panel can apply EXACTLY the same rule to a pinboard's
+/// items, which are loaded from the store rather than from the in-memory
+/// history. Two copies of this rule would drift, and the symptom would be a
+/// word that finds a card on Clipboard but not on the board it is filed on.
+///
+/// An empty query returns the list untouched, which is what "no filter" means.
+public func filterByQuery(_ items: [HistoryItem], _ query: String) -> [HistoryItem] {
+    let tokens = query.lowercased()
+        .split(separator: " ", omittingEmptySubsequences: true)
+        .map(String.init)
+    guard !tokens.isEmpty else { return items }
+    return items.filter { item in
+        // Preview as well as text, so images are reachable. An image has no
+        // text at all, and its preview is "Image 2560 x 1664", which makes
+        // typing "image" or a dimension find it.
+        //
+        // The title too, which is the whole point of naming an item: a name
+        // makes it findable by a word that appears nowhere in the content.
+        let haystack = (item.text + " " + item.preview + " " + (item.title ?? "")).lowercased()
+        return tokens.allSatisfy { haystack.contains($0) }
     }
 }

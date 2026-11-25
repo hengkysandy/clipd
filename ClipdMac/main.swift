@@ -120,6 +120,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let store = self?.store else { return [] }
             return (try? store.search(query, limit: 500)) ?? []
         }
+        // A board tab reads its items from the store, for the same reason
+        // search does: the in-memory history holds only the newest 500.
+        panelController.boardItemsProvider = { [weak self] board in
+            guard let store = self?.store else { return [] }
+            do {
+                return try store.items(onBoard: board)
+            } catch {
+                Diag.panel.error("board load failed: \(String(describing: error), privacy: .public)")
+                return []
+            }
+        }
         // Naming an item writes the row and then reloads the in-memory history,
         // because the panel reads its cards from there. Rejected: mutating the
         // cached HistoryItem in place, which would show the new name until the
@@ -154,6 +165,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelController.onRenameBoard = { [weak self] id, name in
             try? self?.store?.renamePinboard(id: id, to: name)
             self?.scheduleAutoSync(reason: "after a board change")
+        }
+        panelController.onDeleteItem = { [weak self] id in
+            guard let self, let store = self.store else { return }
+            do {
+                try store.deleteItem(id: id)
+            } catch {
+                Diag.panel.error("delete failed: \(String(describing: error), privacy: .public)")
+                return
+            }
+            self.history.discard(id: id)
+            self.rebuildMenu()
+            self.scheduleAutoSync(reason: "after a delete")
         }
         panelController.onToggleMembership = { [weak self] item, board in
             guard let self, let store = self.store else { return }
@@ -255,6 +278,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.history.removeMostRecent()
                     Diag.capture.info("retracted the most recent item after a clipboard clear (auto-clear rule)")
                     self.rebuildMenu()
+                    // Promptly, not on the five minute tick. The secret has
+                    // usually reached the bucket and the other Mac already; the
+                    // sooner the tombstone follows, the shorter it lives there.
+                    self.scheduleAutoSync(reason: "after clearing a secret")
                 }
             })
     }
@@ -278,7 +305,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // all. The version stays because "which version are you on" is the
             // first question anyone asks.
             title: trusted
-                ? "v\(ClipdCore.version) \u{00B7} \(history.items.count) items"
+                ? "v\(ClipdCore.version) \u{00B7} \((try? store?.liveItemCount()) ?? history.items.count) items"
                 : "PASTE DISABLED, Accessibility not granted",
             action: nil, keyEquivalent: "")
         header.isEnabled = false
@@ -440,7 +467,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             history.load(try store.loadAll(limit: 500))
             history.onInsert = { item in try? store.insert(item) }
             history.onTouch = { id, date in try? store.touch(id: id, at: date) }
-            history.onDelete = { id in try? store.hardDelete(id: id) }
+            // Only the auto-clear rule still goes through History.onDelete,
+            // via removeMostRecent. The Delete key has its own path below.
+            history.onDelete = { id in try? store.scrubSecret(id: id) }
 
             self.database = db
             self.store = store
@@ -492,8 +521,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Anything filed on a board is exempt. This is what the pinned
         // argument was always for; it was empty until boards existed.
         let pinned = (try? store.pinnedItemIDs()) ?? []
-        let doomed = itemsToExpire(history.items, policy: settings.retention,
-                                   pinned: pinned, now: Date())
+        // Every stored row, not the newest 500. Against the in-memory list
+        // nothing past the 500th item was ever checked, so once a history
+        // passed 500 items the retention setting stopped doing anything.
+        guard let all = try? store.liveItemDates() else { return }
+        let doomed = idsToExpire(all, policy: settings.retention,
+                                 pinned: pinned, now: Date())
         guard !doomed.isEmpty else { return }
         do {
             try store.expire(ids: doomed, at: Date())

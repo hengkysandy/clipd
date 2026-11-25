@@ -42,6 +42,54 @@ final class SQLiteStore {
         return items(from: rows)
     }
 
+    /// Every live item filed on one board, newest first.
+    ///
+    /// From the store, not from the in-memory history. The panel holds only
+    /// the newest 500 rows, and a board tab used to filter THAT list, so
+    /// anything filed on a board more than 500 copies ago vanished from the
+    /// tab while the card's colour and the Pin menu's tick (both read from the
+    /// store) still said it was there. Reported exactly that way: an item
+    /// ticked under personal, and personal saying "Nothing pinned yet".
+    ///
+    /// No LIMIT, deliberately. A limit here is that same bug with a bigger
+    /// number. Boards are curated by hand, so they stay small.
+    ///
+    /// A tombstoned item is excluded even if its filing is still live, and a
+    /// tombstoned filing is excluded even if the item is still live. Both are
+    /// what "not on this board" means.
+    func items(onBoard board: UUID) throws -> [HistoryItem] {
+        let rows = try db.query("""
+            SELECT \(Self.itemColumns)
+            FROM items
+            WHERE deleted_at IS NULL
+              AND id IN (SELECT item_id FROM item_pinboards
+                         WHERE pinboard_id = ? AND deleted_at IS NULL)
+            ORDER BY created_at DESC
+            """, [.text(board.uuidString)])
+        return items(from: rows)
+    }
+
+    /// Every live item's id and age, and nothing else.
+    ///
+    /// What the retention sweep needs, for ALL rows. Two columns, so no text
+    /// and no image is read: a few thousand rows cost a few kilobytes.
+    func liveItemDates() throws -> [(id: UUID, createdAt: Date)] {
+        try db.query("""
+            SELECT id, created_at FROM items WHERE deleted_at IS NULL
+            """, []).compactMap { row in
+            guard case .text(let s)? = row["id"], let id = UUID(uuidString: s),
+                  case .int(let ms)? = row["created_at"] else { return nil }
+            return (id: id, createdAt: Date(timeIntervalSince1970: Double(ms) / 1000))
+        }
+    }
+
+    /// How many items are really stored. The in-memory count stops at 500.
+    func liveItemCount() throws -> Int {
+        let rows = try db.query("SELECT COUNT(*) AS n FROM items WHERE deleted_at IS NULL", [])
+        if case .int(let n)? = rows.first?["n"] { return Int(n) }
+        return 0
+    }
+
     /// The columns every item query must select, so the row mapper always finds
     /// what it needs. One constant rather than the same list typed twice,
     /// because a column added in one place and missed in the other would show
@@ -273,25 +321,57 @@ final class SQLiteStore {
                    [.int(millis), .int(now), .text(id.uuidString)])
     }
 
-    /// The normal delete. A tombstone, so a sync cannot resurrect it.
+    /// The only way an item is deleted: a tombstone with nothing left in it.
+    ///
+    /// THE ROW STAYS. A sync needs it. A Mac that simply forgets an item gets
+    /// it straight back from the other Mac's manifest, and the other Mac never
+    /// learns it was deleted. Measured against a real bucket: that is exactly
+    /// what the Delete key did while it was wired to a hard delete, for every
+    /// delete, on both Macs. DeleteSyncTests.
+    ///
+    /// THE CONTENT GOES. Nothing ever shows a deleted item again, so keeping
+    /// its text only keeps a copy of something the user chose to get rid of.
+    /// For a secret caught by the auto-clear rule it would keep the secret.
+    /// `content_hash` is wiped too, because for text it IS the text.
+    /// `preview` and `content_hash` are NOT NULL in the schema, hence ''.
+    ///
+    /// The blob is named by item id, never by content, so deleting it cannot
+    /// take an image away from any other item, including a dedup survivor.
     func softDelete(id: UUID, at date: Date) throws {
         let millis = Int64(date.timeIntervalSince1970 * 1000)
-        try db.run("UPDATE items SET deleted_at = ?, updated_at = ? WHERE id = ?",
-                   [.int(millis), .int(millis), .text(id.uuidString)])
-        try db.run("DELETE FROM items_fts WHERE rowid IN (SELECT rowid FROM items WHERE id = ?)",
-                   [.text(id.uuidString)])
-    }
-
-    /// For a secret caught late by the auto-clear rule. The payload must not
-    /// survive in a soft deleted row, and must never reach R2.
-    func hardDelete(id: UUID) throws {
         let rows = try db.query("SELECT blob_ref FROM items WHERE id = ?", [.text(id.uuidString)])
         if case .text(let ref)? = rows.first?["blob_ref"] {
             try? blobs.delete(ref)
         }
         try db.run("DELETE FROM items_fts WHERE rowid IN (SELECT rowid FROM items WHERE id = ?)",
                    [.text(id.uuidString)])
-        try db.run("DELETE FROM items WHERE id = ?", [.text(id.uuidString)])
+        try db.run("""
+            UPDATE items SET deleted_at = ?, updated_at = ?,
+                   text_content = NULL, preview = '', content_hash = '',
+                   title = NULL, source_url = NULL, blob_ref = NULL
+            WHERE id = ?
+            """, [.int(millis), .int(millis), .text(id.uuidString)])
+    }
+
+    /// What the Delete key does.
+    ///
+    /// Named for the intent so it cannot drift back to a hard delete: that was
+    /// one line in main.swift, and no test went through it.
+    func deleteItem(id: UUID) throws {
+        try softDelete(id: id, at: Date())
+    }
+
+    /// What the auto-clear rule does to a secret it caught late.
+    ///
+    /// It used to hard delete, on the reasoning that the payload "must never
+    /// reach R2". It always had: a capture syncs 15 seconds after the copy and
+    /// Passwords.app wipes the clipboard at 60, so the secret was uploaded and
+    /// on the other Mac before it was caught. The hard delete then removed it
+    /// from THIS Mac only, and the next sync brought it back. Measured, not
+    /// predicted. A scrubbed tombstone takes it off both Macs, and the prune
+    /// step removes the bucket object, because the tombstone condemns it.
+    func scrubSecret(id: UUID) throws {
+        try softDelete(id: id, at: Date())
     }
 
     /// Puts this row's current values into the search index, replacing whatever
@@ -349,21 +429,10 @@ final class SQLiteStore {
     /// delete in any sense the user would recognise.
     func expire(ids: [UUID], at date: Date) throws {
         guard !ids.isEmpty else { return }
-        let millis = Int64(date.timeIntervalSince1970 * 1000)
         for id in ids {
-            let rows = try db.query("SELECT blob_ref FROM items WHERE id = ?",
-                                    [.text(id.uuidString)])
-            if case .text(let ref)? = rows.first?["blob_ref"] {
-                try? blobs.delete(ref)
-            }
-            try db.run("""
-                UPDATE items SET deleted_at = ?, updated_at = ?, blob_ref = NULL
-                WHERE id = ?
-                """, [.int(millis), .int(millis), .text(id.uuidString)])
-            try db.run("""
-                DELETE FROM items_fts
-                WHERE rowid IN (SELECT rowid FROM items WHERE id = ?)
-                """, [.text(id.uuidString)])
+            // The same tombstone as every other delete. This used to keep the
+            // text in the row and drop only the blob.
+            try softDelete(id: id, at: date)
         }
     }
 

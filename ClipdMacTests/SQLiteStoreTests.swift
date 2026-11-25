@@ -144,19 +144,37 @@ final class SQLiteStoreTests: XCTestCase {
         XCTAssertNotEqual(rows[0]["deleted_at"], .null)
     }
 
-    func testHardDeleteLeavesNothingAtAll() throws {
+    /// This test used to require that NO row survive a caught secret. That
+    /// rule is what let sync bring the secret straight back from the other
+    /// Mac (see DeleteSyncTests). The rule now: the row survives as a
+    /// tombstone, so a sync carries the delete, but nothing of the secret
+    /// survives in it, and its blob is gone from disk.
+    func testACaughtSecretLeavesATombstoneWithNothingInIt() throws {
         let data = Data(repeating: 0x7, count: 200)
-        let item = HistoryItem(imageData: data, pixelWidth: 10, pixelHeight: 10,
-                               sourceBundleID: nil, sourceName: nil, createdAt: Date())
-        try store.insert(item)
-        try store.hardDelete(id: item.id)
-        // A secret caught late by the auto-clear rule must not survive as a
-        // soft deleted row, and its blob must be gone from disk.
-        let rows = try db.query("SELECT id FROM items WHERE id = ?",
-                                [.text(item.id.uuidString)])
-        XCTAssertTrue(rows.isEmpty)
+        let image = HistoryItem(imageData: data, pixelWidth: 10, pixelHeight: 10,
+                                sourceBundleID: nil, sourceName: nil, createdAt: Date())
+        let secret = HistoryItem(text: "correct horse battery staple", sourceBundleID: nil,
+                                 sourceName: nil, createdAt: Date(), title: "bank")
+        try store.insert(image)
+        try store.insert(secret)
+        try store.scrubSecret(id: image.id)
+        try store.scrubSecret(id: secret.id)
+
+        let rows = try db.query("""
+            SELECT deleted_at, text_content, preview, content_hash, title, blob_ref
+            FROM items WHERE id = ?
+            """, [.text(secret.id.uuidString)])
+        XCTAssertEqual(rows.count, 1, "the tombstone must stay, or sync resurrects the item")
+        XCTAssertNotEqual(rows[0]["deleted_at"], .null)
+        XCTAssertEqual(rows[0]["text_content"], .null)
+        XCTAssertEqual(rows[0]["preview"], .text(""))
+        XCTAssertEqual(rows[0]["content_hash"], .text(""), "for text, the hash IS the text")
+        XCTAssertEqual(rows[0]["title"], .null)
+        XCTAssertTrue(try store.search("horse", limit: 10).isEmpty)
+        XCTAssertTrue(try store.search("bank", limit: 10).isEmpty)
+
         let files = try FileManager.default.contentsOfDirectory(atPath: blobDir.path)
-        XCTAssertTrue(files.isEmpty, "blob survived a hard delete")
+        XCTAssertTrue(files.isEmpty, "the image blob must be gone from disk")
     }
 
     func testTouchDoesNotCreateASecondRow() throws {

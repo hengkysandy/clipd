@@ -128,7 +128,9 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     /// relayout(to:) on every open, so this is only a starting size.
     private let initialWidth: CGFloat
 
-    private var results: [HistoryItem] = []
+    // private(set) rather than private: PanelBoardTests reads it to check what
+    // a board tab really shows, which is the thing that was wrong.
+    private(set) var results: [HistoryItem] = []
     private var selection: Int = 0
     private var isDismissing = false
     /// True while a card title is being edited in place. The panel's own key
@@ -155,6 +157,10 @@ final class PanelController: NSObject, NSTextFieldDelegate,
 
     /// Sets or clears one item's name. Nil means remove it.
     var onRenameItem: ((UUID, String?) -> Void)?
+    /// Deletes one item in the store. Must work for ANY item, including ones
+    /// the in-memory history does not hold, which is why the panel no longer
+    /// deletes through `history.remove`.
+    var onDeleteItem: ((UUID) -> Void)?
 
     /// What a link card should show beyond its address. Nil until the app
     /// wires it, and nil is safe: every link then draws the compass, which is
@@ -176,6 +182,12 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     /// holds in memory. Nil until the app wires it, and nil is safe: the panel
     /// then behaves exactly as it did before, searching the loaded items.
     var searchProvider: ((String) -> [HistoryItem])?
+    /// Every item filed on one board, from the store.
+    ///
+    /// Separate from `searchProvider` and from the in-memory history on
+    /// purpose. Both of those stop at 500 rows, and a board is the one view
+    /// whose whole point is to keep things that are old.
+    var boardItemsProvider: ((UUID) -> [HistoryItem])?
 
     /// The app that was frontmost when the panel opened. Everything depends on
     /// putting it back before pasting.
@@ -704,7 +716,14 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     /// why. Two callers computing the same thing two ways is how that drifted.
     private func refreshResults() {
         let board = boards.first { $0.id == selectedBoard }
-        results = itemsOn(board, items: currentItems(), membership: membership)
+        if let board, let boardItemsProvider {
+            // The board's own items from the store, then the same typed-text
+            // rule the Clipboard tab uses. See boardItemsProvider for why this
+            // must not start from the in-memory history.
+            results = filterByQuery(boardItemsProvider(board.id), field.stringValue)
+        } else {
+            results = itemsOn(board, items: currentItems(), membership: membership)
+        }
         collection.reloadData()
         updateEmptyState(board: board)
     }
@@ -1081,8 +1100,12 @@ final class PanelController: NSObject, NSTextFieldDelegate,
     }
 
     private func commitDelete(of doomed: HistoryItem) {
-        let removed = history.remove(id: doomed.id)
-        Diag.panel.info("deleted 1 item, \(doomed.text.count, privacy: .public) chars, removed \(removed, privacy: .public)")
+        guard let onDeleteItem else {
+            Diag.panel.error("delete ignored: no store attached")
+            return
+        }
+        onDeleteItem(doomed.id)
+        Diag.panel.info("deleted 1 item, \(doomed.text.count, privacy: .public) chars")
         let previousSelection = selection
         refreshResults()
         // Keep the cursor where it was rather than jumping to the start, so
