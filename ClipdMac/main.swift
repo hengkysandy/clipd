@@ -45,7 +45,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var retentionTimer: Timer?
     private var syncTimer: Timer?
     private var syncDebounce: Timer?
+    /// Copies get their own timer. Sharing one with filings meant whichever
+    /// was scheduled last won: a copy's 95 second wait would push back a
+    /// filing that should have gone in 15.
+    private var copySyncDebounce: Timer?
+    /// A one shot pass for copies the last pass held back. Never postponed,
+    /// so a run of copies cannot keep the earlier ones waiting forever.
+    private var heldBackFollowUp: Timer?
     private var isSyncing = false
+    /// Set when a nudge arrives while a pass is running. Such a nudge used to
+    /// be dropped ("A sync is already running."), so a filing made during a
+    /// long pass waited for the five minute tick. Now the pass runs once more
+    /// when it finishes.
+    private var resyncWhenDone = false
     private(set) var lastSyncAt: Date?
     private(set) var lastSyncSummary: String?
     private var database: Database?
@@ -260,7 +272,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     \(self.history.items.count, privacy: .public) in history
                     """)
                 self.rebuildMenu()
-                self.scheduleAutoSync()
+                self.scheduleCopySync()
             },
             onRefusal: { [weak self] reason in
                 guard let self else { return }
@@ -274,7 +286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // is not exact and the margin is free.
                 if case .emptyChange = reason, self.settings.autoClearEnabled,
                    let newest = self.history.items.first,
-                   Date().timeIntervalSince(newest.createdAt) < 90 {
+                   Date().timeIntervalSince(newest.createdAt) < autoClearWindow {
                     self.history.removeMostRecent()
                     Diag.capture.info("retracted the most recent item after a clipboard clear (auto-clear rule)")
                     self.rebuildMenu()
@@ -638,7 +650,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // One pass at a time. Two overlapping passes would each write a
         // manifest, and the later one could claim items the earlier one had not
         // finished uploading.
-        guard !isSyncing else { report("A sync is already running."); return }
+        guard !isSyncing else {
+            resyncWhenDone = true
+            report("A sync is already running. Another will follow it.")
+            return
+        }
         isSyncing = true
         let deviceID = Self.deviceIdentifier()
         Task {
@@ -646,14 +662,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let client = R2Client(credentials: credentials)
                 let salt = try await SyncEngine.fetchOrCreateSalt(client: client)
                 let key = SyncCrypto.deriveKey(passphrase: passphrase, salt: salt)
+                // New copies wait out the auto-clear window before they may
+                // leave this Mac, so a secret the rule catches never reaches
+                // the bucket or the other Mac. Nothing to protect when
+                // auto-clear is off, so nothing is held then.
+                let hold = self.settings.autoClearEnabled ? autoClearWindow : 0
                 let engine = SyncEngine(client: client, store: store,
-                                        deviceID: deviceID, key: key)
+                                        deviceID: deviceID, key: key, holdBack: hold)
                 let summary = try await engine.runOnce()
                 let refreshed = try store.loadAll(limit: 500)
-                Diag.sync.info("sync ok: up \(summary.uploaded, privacy: .public), down \(summary.downloaded, privacy: .public), tombstones \(summary.tombstoned, privacy: .public)")
+                Diag.sync.info("sync ok: up \(summary.uploaded, privacy: .public), down \(summary.downloaded, privacy: .public), tombstones \(summary.tombstoned, privacy: .public), held \(summary.heldBack, privacy: .public)")
                 await MainActor.run {
                     self.history.load(refreshed)
                     self.isSyncing = false
+                    self.afterPass(heldBack: summary.heldBack)
                     // Duplicates can only arrive via a sync, so this is the
                     // only moment worth checking.
                     self.runDedup()
@@ -661,8 +683,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.lastSyncSummary = "\(summary.uploaded) up, \(summary.downloaded) down, "
                         + "\(summary.tombstoned) deleted, \(refreshed.count) items"
                     self.rebuildMenu()
+                    // Said plainly, so a Sync Now that seems to have skipped
+                    // the thing you just copied explains itself.
+                    let held = summary.heldBack == 0 ? ""
+                        : " \(summary.heldBack) new \(summary.heldBack == 1 ? "copy waits" : "copies wait") "
+                        + "\(Int(autoClearWindow)) seconds before upload, in case it is a password."
                     report("Synced. \(summary.uploaded) uploaded, \(summary.downloaded) downloaded, "
-                           + "\(summary.tombstoned) deleted. \(refreshed.count) items here now.")
+                           + "\(summary.tombstoned) deleted. \(refreshed.count) items here now." + held)
                 }
             } catch {
                 // Loud. A silent sync failure means the other Mac quietly
@@ -670,6 +697,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Diag.sync.error("sync failed: \(String(describing: error), privacy: .public)")
                 await MainActor.run {
                     self.isSyncing = false
+                    self.afterPass(heldBack: 0)
                     self.lastSyncSummary = "failed"
                     report("Sync failed: \(error)")
                 }
@@ -744,18 +772,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Called after anything that changes state the other Mac should see: a
-    /// capture, a filing, a board edit, a rename.
+    /// Called after a change the other Mac should see: a filing, a delete, a
+    /// board edit, a rename, a cleared secret. Never held, so 15 seconds.
     ///
     /// Debounced, so filing six items in a row produces one sync rather than
     /// six. The reason travels into the log so it is possible to tell, from the
     /// log alone, whether a sync happened because of something you did or
     /// because the five minute timer came round.
-    private func scheduleAutoSync(reason: String = "after a copy") {
+    private func scheduleAutoSync(reason: String) {
         guard settings.autoSyncEnabled else { return }
         syncDebounce?.invalidate()
         syncDebounce = Timer.scheduledTimer(withTimeInterval: 15, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.autoSync(reason: reason) }
+        }
+    }
+
+    /// Called after a copy.
+    ///
+    /// With auto-clear on, a pass at 15 seconds would only hold the copy back,
+    /// so the first useful moment is just after the window. Five seconds of
+    /// margin, so the copy is clearly older than the hold when the pass reads
+    /// the clock. With auto-clear off, nothing is held and 15 seconds is right.
+    private func scheduleCopySync() {
+        guard settings.autoSyncEnabled else { return }
+        let delay = settings.autoClearEnabled ? autoClearWindow + 5 : 15
+        copySyncDebounce?.invalidate()
+        copySyncDebounce = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.autoSync(reason: "after a copy") }
+        }
+    }
+
+    /// What has to happen when a pass ends, successful or not.
+    private func afterPass(heldBack: Int) {
+        if resyncWhenDone {
+            resyncWhenDone = false
+            scheduleAutoSync(reason: "a nudge arrived during the last pass")
+        }
+        // Held copies go up as soon as they clear the window. Only scheduled
+        // if none is pending, so later copies cannot keep postponing it.
+        if heldBack > 0, heldBackFollowUp?.isValid != true {
+            heldBackFollowUp = Timer.scheduledTimer(withTimeInterval: autoClearWindow + 5,
+                                                    repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.heldBackFollowUp = nil
+                    self?.autoSync(reason: "held copies cleared the auto-clear window")
+                }
+            }
         }
     }
 
@@ -796,10 +858,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func quit() { NSApp.terminate(nil) }
 }
 
+/// True when this process exists only to host the unit tests.
+///
+/// The test target is hosted inside the app, and this file used to start the
+/// whole app regardless. So every test run launched a SECOND Clipd on the
+/// user's real database, with the real Keychain credentials, alongside the one
+/// already running. Measured: a test host logged "store opened, 500 items
+/// restored" and "hotkey registered". For as long as a run lasted (the full
+/// suite takes about five minutes) it watched the real clipboard, so every copy
+/// was recorded twice and then folded by dedup; it synced to the real bucket
+/// under this Mac's device id; and it held Cmd+Shift+V. Tests build every
+/// object they need themselves, so the host needs none of it.
+///
+/// Environment variables rather than looking for the XCTest classes: at this
+/// point in launch the test bundle has not necessarily been loaded yet.
+let isHostingTests: Bool = {
+    let env = ProcessInfo.processInfo.environment
+    return env["XCTestConfigurationFilePath"] != nil
+        || env["XCTestBundlePath"] != nil
+        || env["XCTestSessionIdentifier"] != nil
+}()
+
 let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-// Menu bar only. Rejected: .regular, which puts an icon in the Dock and
-// gives the app a main menu it has no use for.
-app.setActivationPolicy(.accessory)
-app.run()
+if isHostingTests {
+    // A run loop for XCTest and nothing else: no store, no clipboard watcher,
+    // no sync, no hotkey, no menu bar icon.
+    app.setActivationPolicy(.prohibited)
+    app.run()
+} else {
+    let delegate = AppDelegate()
+    app.delegate = delegate
+    // Menu bar only. Rejected: .regular, which puts an icon in the Dock and
+    // gives the app a main menu it has no use for.
+    app.setActivationPolicy(.accessory)
+    app.run()
+}

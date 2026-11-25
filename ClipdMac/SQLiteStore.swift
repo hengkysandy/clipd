@@ -83,6 +83,27 @@ final class SQLiteStore {
         }
     }
 
+    /// Items copied on THIS Mac since `date`, tombstones included.
+    ///
+    /// What sync holds back. Only this Mac's own copies: an item that arrived
+    /// from the other Mac has already been through that Mac's hold, and
+    /// holding it here would make this Mac claim not to have something it
+    /// does, which planSync would answer by downloading it again.
+    ///
+    /// Tombstones too, so a secret that auto-clear scrubbed inside the window
+    /// does not announce itself, even as an empty record, until the window
+    /// has passed.
+    func idsCapturedHere(since date: Date) throws -> Set<UUID> {
+        let millis = Int64(date.timeIntervalSince1970 * 1000)
+        let rows = try db.query("""
+            SELECT id FROM items WHERE device_id = ? AND created_at > ?
+            """, [.text(deviceID), .int(millis)])
+        return Set(rows.compactMap { row in
+            guard case .text(let s)? = row["id"] else { return nil }
+            return UUID(uuidString: s)
+        })
+    }
+
     /// How many items are really stored. The in-memory count stops at 500.
     func liveItemCount() throws -> Int {
         let rows = try db.query("SELECT COUNT(*) AS n FROM items WHERE deleted_at IS NULL", [])
@@ -778,8 +799,17 @@ final class SQLiteStore {
     }
 
     /// Marks an item deleted because the other Mac deleted it.
-    func applyTombstone(id: UUID, at date: Date) throws {
+    ///
+    /// Only a LIVE row changes. There is nothing to mark when this Mac never
+    /// had the item, and re-marking a row already deleted would give it a new
+    /// timestamp for no reason. Returns whether anything changed, so the sync
+    /// log counts real deletions rather than every deletion it was told about.
+    @discardableResult
+    func applyTombstone(id: UUID, at date: Date) throws -> Bool {
+        let rows = try db.query("SELECT deleted_at FROM items WHERE id = ?", [.text(id.uuidString)])
+        guard let row = rows.first, case .null? = row["deleted_at"] else { return false }
         try softDelete(id: id, at: date)
+        return true
     }
 
     // MARK: - Pinboards

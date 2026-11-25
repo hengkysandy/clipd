@@ -9,6 +9,9 @@ struct SyncSummary: Equatable {
     /// Objects removed from the bucket this pass, because their item is
     /// tombstoned locally.
     let pruned: Int
+    /// New copies kept off the bucket this pass because they are younger than
+    /// the hold. The caller schedules a follow up pass for them.
+    var heldBack: Int = 0
 }
 
 /// One sync pass.
@@ -38,18 +41,38 @@ final class SyncEngine {
     /// empty bucket and looked broken. Never point a destructive test at
     /// production.
     private let prefix: String
+    /// How long a new copy made on this Mac waits before it may leave it.
+    ///
+    /// The auto-clear window when auto-clear is on, zero when it is off. A
+    /// copy inside the hold is neither uploaded nor listed in this Mac's
+    /// manifest, so if the auto-clear rule then catches it as a secret, no
+    /// byte of it, and no record of it, ever reached the bucket or the other
+    /// Mac. Everything else (deletes, filings, renames, boards, anything that
+    /// arrived from the other Mac) is never held.
+    private let holdBack: TimeInterval
+    /// Injectable so a test can let the hold expire without waiting 90 seconds.
+    private let now: () -> Date
 
     init(client: R2Client, store: SQLiteStore, deviceID: String,
-         key: SymmetricKey, prefix: String = "") {
+         key: SymmetricKey, prefix: String = "",
+         holdBack: TimeInterval = 0, now: @escaping () -> Date = Date.init) {
         self.client = client
         self.store = store
         self.deviceID = deviceID
         self.key = key
         self.prefix = prefix
+        self.holdBack = holdBack
+        self.now = now
+    }
+
+    private func heldBackIDs() throws -> Set<UUID> {
+        guard holdBack > 0 else { return [] }
+        return try store.idsCapturedHere(since: now().addingTimeInterval(-holdBack))
     }
 
     func runOnce() async throws -> SyncSummary {
-        let local = try store.allRecords()
+        let held = try heldBackIDs()
+        let local = try store.allRecords().filter { !held.contains($0.id) }
 
         // Every manifest except our own. Ours describes what we already know.
         //
@@ -74,9 +97,23 @@ final class SyncEngine {
 
         var uploaded = 0, downloaded = 0, tombstoned = 0, pruned = 0
 
+        // An item's deletion travels in this Mac's manifest, never as an
+        // object. Nobody ever downloads an item tombstone's body:
+        // `.applyTombstone` below needs only the record. Uploading one did
+        // harm: the prune step further down deletes it again in the same pass,
+        // and a Mac that never had the item has no row to mark, so it never
+        // lists the tombstone, so planSync asks for the upload again next pass,
+        // forever. Measured in production as "up 378 ... pruned 370" on passes
+        // that took about seven minutes. Boards and memberships are different
+        // and still upload theirs: their tombstones are applied from the body.
+        let tombstonedHere = Set(local.filter { $0.deletedAt != nil }.map(\.id))
+        // The exact remote record planSync chose, per item.
+        let remoteNewest = newestByID(remote)
+
         for action in planSync(local: local, remote: remote) {
             switch action {
             case .upload(let id):
+                if tombstonedHere.contains(id) { continue }
                 guard let payload = try store.payload(for: id) else { continue }
                 let sealed = try SyncCrypto.seal(payload, with: key)
                 _ = try await client.put(prefix + "items/\(id.uuidString).enc", sealed)
@@ -104,8 +141,12 @@ final class SyncEngine {
                 }
 
             case .applyTombstone(let id):
-                try store.applyTombstone(id: id, at: Date())
-                tombstoned += 1
+                // Stamped with when the other Mac really deleted it, not with
+                // now. A later stamp would make this Mac's copy look newer than
+                // the other's, and would let a deletion beat an edit that the
+                // other Mac made after deleting.
+                let when = remoteNewest[id]?.deletedAt ?? Date()
+                if try store.applyTombstone(id: id, at: when) { tombstoned += 1 }
 
             case .nothing:
                 break
@@ -197,15 +238,22 @@ final class SyncEngine {
         }
 
         // Our manifest last, so it only ever claims things we really uploaded.
+        //
+        // The hold is worked out AGAIN here, not reused from the start of the
+        // pass. A first pass can take minutes, and a copy made while it ran is
+        // in `allRecords()` now but was never considered for upload, so
+        // without this it would be claimed here without being uploaded.
+        let heldAtEnd = try heldBackIDs()
         let manifest = SyncManifest(deviceID: deviceID,
-                                    records: try store.allRecords(),
+                                    records: try store.allRecords().filter { !heldAtEnd.contains($0.id) },
                                     boards: try store.boardRecords(),
                                     memberships: try store.membershipRecords())
         let sealed = try SyncCrypto.seal(try JSONEncoder().encode(manifest), with: key)
         _ = try await client.put(prefix + "manifests/\(deviceID).json.enc", sealed)
 
         return SyncSummary(uploaded: uploaded, downloaded: downloaded,
-                           tombstoned: tombstoned, pruned: pruned)
+                           tombstoned: tombstoned, pruned: pruned,
+                           heldBack: heldAtEnd.count)
     }
 
     /// Fetches the shared salt, creating it once if this is the first device.

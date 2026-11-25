@@ -79,17 +79,35 @@ public enum SyncAction: Equatable, Sendable {
 public func planSync(local: [SyncRecord], remote: [SyncRecord]) -> [SyncAction] {
     var localByID = [UUID: SyncRecord]()
     for record in local { localByID[record.id] = record }
-    var remoteByID = [UUID: SyncRecord]()
-    for record in remote { remoteByID[record.id] = record }
+    // Several manifests can list the same item. Keep the NEWEST record, never
+    // simply the last one listed. Manifests are listed in key order, so "last"
+    // meant "the device whose id sorts last", and a device last seen in
+    // September sorts after the live Mac: its two month old records replaced
+    // the live ones. Measured in production as ten items re-uploaded on every
+    // pass, and it also meant a deletion made on the live Mac could never
+    // arrive while the stale manifest still said "live".
+    let remoteByID = newestByID(remote)
 
     // Stable ordering: local first in their given order, then remote-only in
     // theirs. A plan that reorders between runs is impossible to compare.
+    // Each id once: an item listed by two manifests used to be planned, and
+    // fetched, twice.
     var order: [UUID] = local.map(\.id)
-    for record in remote where localByID[record.id] == nil { order.append(record.id) }
+    var planned = Set(order)
+    for record in remote where localByID[record.id] == nil && !planned.contains(record.id) {
+        order.append(record.id)
+        planned.insert(record.id)
+    }
 
     return order.map { id in
         switch (localByID[id], remoteByID[id]) {
         case let (mine?, theirs?):
+            // Both sides already hold a deletion: nothing to exchange, whatever
+            // the timestamps say. This rule used to apply only on an exact tie,
+            // so two tombstones a few seconds apart made each Mac re-apply the
+            // other's on every pass, forever. Measured as "tombstones 26" on
+            // every single pass in production.
+            if mine.isTombstone && theirs.isTombstone { return .nothing(id) }
             if mine.updatedAt > theirs.updatedAt { return .upload(id) }
             if mine.updatedAt < theirs.updatedAt {
                 // A tombstone needs no body. Downloading the content of a
@@ -133,4 +151,29 @@ public func planSync(local: [SyncRecord], remote: [SyncRecord]) -> [SyncAction] 
             return .nothing(id)
         }
     }
+}
+
+/// The newest record per item across every remote manifest. See planSync for
+/// why "newest" and never "last listed". Public so the sync engine looks up the
+/// exact record planSync decided on, for instance to stamp a received deletion
+/// with the time it really happened.
+public func newestByID(_ records: [SyncRecord]) -> [UUID: SyncRecord] {
+    var out = [UUID: SyncRecord]()
+    for record in records {
+        if let held = out[record.id], !isNewer(record, than: held) { continue }
+        out[record.id] = record
+    }
+    return out
+}
+
+/// Which of two records for the same item describes it more recently.
+///
+/// Later `updatedAt` wins. On a tie a deletion wins, the same rule planSync
+/// applies between this Mac and the other. On a complete tie the device id
+/// decides, only so that the answer never depends on the order the manifests
+/// arrived in.
+func isNewer(_ a: SyncRecord, than b: SyncRecord) -> Bool {
+    if a.updatedAt != b.updatedAt { return a.updatedAt > b.updatedAt }
+    if a.isTombstone != b.isTombstone { return a.isTombstone }
+    return a.deviceID > b.deviceID
 }

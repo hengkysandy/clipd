@@ -1,4 +1,5 @@
 import AppKit
+import ClipdCore
 import UniformTypeIdentifiers
 
 /// Privacy settings: which apps are never recorded, and the auto-clear rule.
@@ -44,10 +45,17 @@ final class PrivacyPane: NSViewController, NSTableViewDataSource, NSTableViewDel
         autoClear.state = settings.autoClearEnabled ? .on : .off
         root.addSubview(autoClear)
 
+        // The second sentence is the cost of the setting, stated where it is
+        // switched. Without it, a copy that takes 95 seconds to reach the other
+        // Mac looks like a sync bug.
         let explain = NSTextField(wrappingLabelWithString:
             "Password managers wipe the clipboard about a minute after you copy. "
-            + "Treating that as a signal catches managers that are not in the list below.")
-        explain.frame = NSRect(x: 42, y: 316, width: 400, height: 34)
+            + "While this is on, a new copy waits \(Int(autoClearWindow)) seconds before it syncs, "
+            + "so a password caught this way never leaves this Mac.")
+        explain.identifier = NSUserInterfaceItemIdentifier("autoClearExplain")
+        // Three lines. Its top edge stays where it was; the bottom stays clear
+        // of the "Never record copies from" heading, which ends at y 300.
+        explain.frame = NSRect(x: 42, y: 304, width: 400, height: 46)
         explain.font = .systemFont(ofSize: 11)
         explain.textColor = .secondaryLabelColor
         root.addSubview(explain)
